@@ -6,6 +6,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from .firebase_auth import verify_firebase_token
 from .models import InstagramAccount
 from django.contrib.auth import get_user_model
+from django.conf import settings
 User = get_user_model()
 
 def get_tokens_for_user(user):
@@ -29,64 +30,93 @@ class FirebaseLoginView(APIView):
         email = decoded_token.get('email')
         name = decoded_token.get('name', '')
         
-        # Resolve User (Primary Identity)
-        user = User.objects.filter(email=email).first()
-        if not user:
-            user, created = User.objects.get_or_create(username=uid, defaults={'email': email, 'first_name': name, 'firebase_uid': uid})
-        else:
-            if not user.first_name and name:
-                user.first_name = name
-            if not user.firebase_uid:
-                user.firebase_uid = uid
-            user.save()
-        # ── Resolve login methods from Firebase Admin ────────────────────────────
-        # We UNION-merge with the existing stored methods so that logging in
-        # via Google never wipes out the previously stored 'email' method.
-        from firebase_admin import auth as admin_auth
         try:
-            firebase_user = admin_auth.get_user(uid)
-            provider_ids = [p.provider_id for p in firebase_user.provider_data]
+            if not email:
+                # Fallback to uid if email is missing (e.g. anonymous or phone login)
+                email = f"{uid}@anydm.internal"
+
+            # 1. Try to resolve by firebase_uid (Most reliable)
+            user = User.objects.filter(firebase_uid=uid).first()
+            
+            # 2. If not found, try by email (Merging case)
+            if not user:
+                user = User.objects.filter(email=email).first()
+
+            if not user:
+                # 3. Create new if absolutely no match
+                user = User.objects.create(
+                    username=uid, 
+                    email=email, 
+                    first_name=name, 
+                    firebase_uid=uid
+                )
+                print(f"[FirebaseLogin] Created new user: {user.username}")
+            else:
+                # Sync info
+                if not user.firebase_uid:
+                    user.firebase_uid = uid
+                if not user.first_name and name:
+                    user.first_name = name
+                user.save()
+                print(f"[FirebaseLogin] Found existing user: {user.username}")
+            
+            # ── Resolve login methods from Firebase Admin ────────────────────────────
+            from firebase_admin import auth as admin_auth
+            try:
+                firebase_user = admin_auth.get_user(uid)
+                provider_ids = [p.provider_id for p in firebase_user.provider_data]
+            except Exception as e:
+                print(f"Firebase Admin Error: {e}")
+                provider_ids = []
+    
+            provider_map = {'google.com': 'google', 'password': 'email', 'firebase': 'email'}
+            firebase_methods = []
+            for pid in provider_ids:
+                method = provider_map.get(pid)
+                if method and method not in firebase_methods:
+                    firebase_methods.append(method)
+    
+            # Ensure user.login_methods is a list
+            stored_methods = user.login_methods if isinstance(user.login_methods, list) else []
+            merged_methods = list(set(stored_methods) | set(firebase_methods))
+    
+            if set(stored_methods) != set(merged_methods):
+                user.login_methods = merged_methods
+                user.save()
+    
+            # Load Instagram accounts
+            instagram_accounts = InstagramAccount.objects.filter(user=user)
+    
+            # Generate JWT tokens
+            tokens = get_tokens_for_user(user)
+    
+            return Response({
+                'message': 'Login successful',
+                'tokens': tokens,
+                'user': {
+                    'id': user.id,
+                    'email': user.email,
+                    'login_methods': merged_methods,
+                    'display_name': user.first_name or user.username,
+                    'active_instagram_account_id': user.active_instagram_account_id,
+                },
+                'instagram_accounts': [
+                    {
+                        'id': acc.id,
+                        'username': acc.username,
+                        'profile_picture_url': acc.profile_picture_url,
+                        'used_for_login': acc.used_for_login,
+                    } for acc in instagram_accounts
+                ]
+            }, status=status.HTTP_200_OK)
         except Exception as e:
-            provider_ids = []
-
-        provider_map = {'google.com': 'google', 'password': 'email'}
-        firebase_methods = []
-        for pid in provider_ids:
-            method = provider_map.get(pid)
-            if method and method not in firebase_methods:
-                firebase_methods.append(method)
-
-        # UNION: keep everything already in Django + add anything new from Firebase
-        merged_methods = list(set(user.login_methods) | set(firebase_methods))
-
-        if set(user.login_methods) != set(merged_methods):
-            user.login_methods = merged_methods
-            user.save()
-
-        # Load Instagram accounts
-        instagram_accounts = InstagramAccount.objects.filter(user=user)
-
-        # Generate JWT tokens
-        tokens = get_tokens_for_user(user)
-
-        return Response({
-            'message': 'Login successful',
-            'tokens': tokens,
-            'user': {
-                'id': user.id,
-                'email': user.email,
-                'login_methods': merged_methods,
-                'display_name': user.first_name,
-            },
-            'instagram_accounts': [
-                {
-                    'id': acc.id,
-                    'username': acc.username,
-                    'profile_picture_url': acc.profile_picture_url,
-                    'used_for_login': acc.used_for_login,
-                } for acc in instagram_accounts
-            ]
-        }, status=status.HTTP_200_OK)
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"Error in FirebaseLoginView:\n{error_trace}")
+            return Response({
+                'error': str(e),
+                'trace': error_trace if settings.DEBUG else None
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class InstagramLoginView(APIView):
@@ -139,42 +169,64 @@ class InstagramLoginView(APIView):
             ig_full_name = data.get('name')
             ig_profile_pic = data.get('profile_picture_url')
             
-            # Check if this Instagram account is already known
-            ig_account = InstagramAccount.objects.filter(instagram_user_id=ig_id).first()
+            auth_header = request.headers.get('Authorization', 'No Header')
+            print(f"[InstagramLogin] Auth Header: {auth_header}")
+            print(f"[InstagramLogin] request.user.is_authenticated: {request.user.is_authenticated}")
             
+            # Use update_or_create to strictly enforce uniqueness of instagram_user_id
+            # and update the existing record if found.
             if request.user.is_authenticated:
-                # Account Linking Mode
+                # 1. Linking Mode (Logged in)
                 user = request.user
+                print(f"[InstagramLogin] Authenticated Link: User(id={user.id}, email={user.email})")
+
+                # Check if this account already belongs to someone else
+                existing_ig = InstagramAccount.objects.filter(instagram_user_id=ig_id).first()
+                if existing_ig and existing_ig.user != user:
+                    return Response({
+                        'error': 'Account already added', 
+                        'details': f'The Instagram account @{ig_username} is already linked to another AnyDm user.'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                # Sync first_name if missing
+                if not user.first_name and ig_full_name:
+                    user.first_name = ig_full_name
+                    user.save()
+                
+                ig_account, created = InstagramAccount.objects.update_or_create(
+                    instagram_user_id=ig_id,
+                    defaults={
+                        'user': user,
+                        'username': ig_username,
+                        'full_name': ig_full_name,
+                        'access_token': access_token,
+                        'profile_picture_url': ig_profile_pic,
+                        'used_for_login': True
+                    }
+                )
+                print(f"[InstagramLogin] Linked account {ig_username} to User(id={user.id}). Created: {created}")
+            else:
+                # 2. Entry Login Mode (Logged out)
+                # Check if this account already exists
+                ig_account = InstagramAccount.objects.filter(instagram_user_id=ig_id).first()
                 
                 if ig_account:
-                    ig_account.access_token = access_token
-                    ig_account.username = ig_username
-                    ig_account.full_name = ig_full_name
-                    ig_account.profile_picture_url = ig_profile_pic
-                    ig_account.user = user 
-                    ig_account.save()
-                else:
-                    ig_account = InstagramAccount.objects.create(
-                        user=user,
-                        instagram_user_id=ig_id,
-                        username=ig_username,
-                        full_name=ig_full_name,
-                        access_token=access_token,
-                        profile_picture_url=ig_profile_pic
-                    )
-            else:
-                # Entry Login Mode
-                if ig_account:
                     user = ig_account.user
-                    ig_account.access_token = access_token
+                    # Update info
                     ig_account.username = ig_username
-                    ig_account.full_name = ig_full_name
+                    ig_account.access_token = access_token
                     ig_account.profile_picture_url = ig_profile_pic
                     ig_account.used_for_login = True
                     ig_account.save()
+                    print(f"[InstagramLogin] Logging in existing User(id={user.id}) via IG account {ig_username}")
                 else:
+                    # Create new user for this new IG account
+                    print(f"[InstagramLogin] New IG account {ig_username}. Creating new user.")
                     django_username = f"ig_{ig_username}_{ig_id}"
-                    user, created = User.objects.get_or_create(username=django_username)
+                    user, user_created = User.objects.get_or_create(
+                        username=django_username,
+                        defaults={'first_name': ig_full_name}
+                    )
                     
                     ig_account = InstagramAccount.objects.create(
                         user=user,
@@ -182,25 +234,33 @@ class InstagramLoginView(APIView):
                         username=ig_username,
                         full_name=ig_full_name,
                         access_token=access_token,
-                        profile_picture_url=ig_profile_pic
+                        profile_picture_url=ig_profile_pic,
+                        used_for_login=True
                     )
+                    print(f"[InstagramLogin] Created new User(id={user.id}) for IG account. Created: {user_created}")
             
-            # Update login methods
-            if "instagram" not in user.login_methods:
-                user.login_methods.append("instagram")
+            # Update login methods safely
+            stored_methods = user.login_methods if isinstance(user.login_methods, list) else []
+            if "instagram" not in stored_methods:
+                stored_methods.append("instagram")
+                user.login_methods = stored_methods
             
             # Auto-set active account if none selected
             if not user.active_instagram_account:
                 user.active_instagram_account = ig_account
+            
+            # Ensure firebase_uid is set for consistent identity
+            if not user.firebase_uid:
+                user.firebase_uid = str(user.id)
             
             user.save()
             
             # Generate JWT tokens
             tokens = get_tokens_for_user(user)
             
-            # Generate Firebase custom token
+            # Generate Firebase custom token using the persistent firebase_uid
             from .firebase_auth import create_custom_token
-            firebase_token = create_custom_token(str(user.id))
+            firebase_token = create_custom_token(user.firebase_uid)
 
             return Response({
                 'message': 'Instagram action successful',
@@ -272,3 +332,17 @@ class GetConnectedInstagramAccountsView(APIView):
         ]
         
         return Response({'accounts': accounts_data}, status=status.HTTP_200_OK)
+        
+class UpdateProfileView(APIView):
+    def post(self, request):
+        if not request.user.is_authenticated:
+            return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+            
+        display_name = request.data.get('display_name')
+        if display_name is not None:
+            user = request.user
+            user.first_name = display_name
+            user.save()
+            return Response({'message': 'Profile updated successfully', 'display_name': user.first_name})
+            
+        return Response({'error': 'display_name is required'}, status=status.HTTP_400_BAD_REQUEST)
