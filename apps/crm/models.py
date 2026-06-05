@@ -139,12 +139,18 @@ class Enquiry(models.Model):
         default='MEDIUM'
     )
 
+    media_id = models.CharField(
+        max_length=255, blank=True, null=True,
+        help_text="Instagram media ID (post/reel/story) this interaction happened on"
+    )
+
     assigned_to = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
         blank=True,
         on_delete=models.SET_NULL
     )
+    
 
     created_at = models.DateTimeField(auto_now_add=True)
 
