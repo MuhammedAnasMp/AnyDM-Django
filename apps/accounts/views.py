@@ -301,6 +301,7 @@ class InstagramLoginView(APIView):
                     ig_account.profile_picture_url = ig_profile_pic
                     ig_account.used_for_login = True
                     ig_account.is_active = True
+                    ig_account.last_refreshed_at = timezone.now()
                     ig_account.save()
                     created = False
                 else:
@@ -314,7 +315,7 @@ class InstagramLoginView(APIView):
                         profile_picture_url=ig_profile_pic,
                         used_for_login=True,
                         is_active=True,
-                        
+                        last_refreshed_at=timezone.now()
                     )
                     created = True
                 print(f"[InstagramLogin] Linked account {ig_username} to User(id={user.id}). Created: {created}")
@@ -342,6 +343,7 @@ class InstagramLoginView(APIView):
                     ig_account.access_token = access_token
                     ig_account.profile_picture_url = ig_profile_pic
                     ig_account.is_active = True # Reactivate if it was soft-deleted
+                    ig_account.last_refreshed_at = timezone.now()
                     ig_account.save()
                     print(f"[InstagramLogin] Logging in User(id={user.id}) via IG account {ig_username}.")
                 else:
@@ -380,7 +382,8 @@ class InstagramLoginView(APIView):
                             access_token=access_token,
                             profile_picture_url=ig_profile_pic,
                             used_for_login=True,
-                            is_active=True
+                            is_active=True,
+                            last_refreshed_at=timezone.now()
                         )
                     print(f"[InstagramLogin] Associated User(id={user.id}) with IG account.")
             
@@ -664,6 +667,10 @@ class InstagramStoriesView(APIView):
             "access_token": active_account.access_token
         }
         
+        after_cursor = request.query_params.get("after")
+        if after_cursor:
+            params["after"] = after_cursor
+        
         try:
             r = requests.get(url, params=params)
             r.raise_for_status()
@@ -799,7 +806,28 @@ class WebsiteSettingsView(APIView):
 
         # Update settings fields
         settings_obj.store_name = request.data.get('store_name', settings_obj.store_name)
-        settings_obj.store_logo = request.data.get('store_logo', settings_obj.store_logo)
+        
+        old_logo = settings_obj.store_logo
+        new_logo = request.data.get('store_logo', old_logo)
+        if old_logo and new_logo != old_logo:
+            # If the old logo was a Cloudinary URL, delete it
+            if "res.cloudinary.com" in old_logo:
+                try:
+                    parts = old_logo.split("/upload/")
+                    if len(parts) > 1:
+                        path_after_upload = parts[1]
+                        if path_after_upload.startswith("v"):
+                            path_after_upload = "/".join(path_after_upload.split("/")[1:])
+                        public_id = path_after_upload.rsplit(".", 1)[0]
+                        
+                        from apps.products.models import delete_from_cloudinary
+                        delete_from_cloudinary(public_id, "image")
+                except Exception as e:
+                    import logging
+                    local_logger = logging.getLogger(__name__)
+                    local_logger.error("Error deleting old logo from Cloudinary: %s", e)
+
+        settings_obj.store_logo = new_logo
         settings_obj.show_related_products = request.data.get('show_related_products', settings_obj.show_related_products)
         settings_obj.enable_instagram_button = request.data.get('enable_instagram_button', settings_obj.enable_instagram_button)
         settings_obj.enable_whatsapp_button = request.data.get('enable_whatsapp_button', settings_obj.enable_whatsapp_button)

@@ -24,10 +24,10 @@ class ProductSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'description', 'price', 'original_price', 'currency', 'stock',
             'negotiable', 'category', 'location', 'media_url', 'source_type',
-            'source_id', 'instagram_permalink', 'status', 'created_at',
+            'source_id', 'media_id', 'instagram_permalink', 'status', 'created_at',
             'updated_at', 'gallery', 'cloudinary_metadata', 'metadata'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'source_type', 'source_id', 'instagram_permalink']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'source_type', 'source_id', 'media_id', 'instagram_permalink']
 
     def to_representation(self, instance):
         repr_data = super().to_representation(instance)
@@ -83,6 +83,7 @@ class ProductSerializer(serializers.ModelSerializer):
                     from .utils import extract_instagram_id
                     shortcode = extract_instagram_id(permalink)
                 validated_data['source_id'] = shortcode or request.data.get('source_id') or request.data.get('media_id')
+                validated_data['media_id'] = request.data.get('media_id') or validated_data['source_id']
                 validated_data['instagram_permalink'] = permalink
 
         seller = validated_data.get('seller')
@@ -131,6 +132,7 @@ class ProductSerializer(serializers.ModelSerializer):
                     from .utils import extract_instagram_id
                     shortcode = extract_instagram_id(permalink)
                 instance.source_id = shortcode or request.data.get('source_id') or request.data.get('media_id') or instance.source_id
+                instance.media_id = request.data.get('media_id') or instance.media_id or instance.source_id
                 instance.instagram_permalink = permalink
 
         # Update core fields
@@ -140,15 +142,22 @@ class ProductSerializer(serializers.ModelSerializer):
 
         # Re-build gallery collection if supplied
         if gallery_data is not None:
-            instance.gallery.all().delete()
+            new_urls = [item.get('media_url') for item in gallery_data if item.get('media_url')]
+            
+            # Delete only the ones that are NOT in the new list (this will trigger post_delete for removed items)
+            instance.gallery.exclude(media_url__in=new_urls).delete()
+            
+            # Update or create the rest
             for order, media_item in enumerate(gallery_data):
-                ProductMedia.objects.create(
+                ProductMedia.objects.update_or_create(
                     product=instance,
                     media_url=media_item.get('media_url'),
-                    thumbnail_url=media_item.get('thumbnail_url'),
-                    media_type=media_item.get('media_type', 'IMAGE'),
-                    order=media_item.get('order', order),
-                    cloudinary_metadata=media_item.get('cloudinary_metadata')
+                    defaults={
+                        "thumbnail_url": media_item.get('thumbnail_url'),
+                        "media_type": media_item.get('media_type', 'IMAGE'),
+                        "order": media_item.get('order', order),
+                        "cloudinary_metadata": media_item.get('cloudinary_metadata')
+                    }
                 )
 
         return instance

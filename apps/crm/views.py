@@ -251,6 +251,31 @@ def detect_and_create_enquiry(interaction):
 
     return enquiry
 
+
+def process_interaction_all(interaction):
+    """
+    Processes a CustomerInteraction through both the CRM Enquiry system 
+    and the Visual Automation Workflow engine.
+    """
+    logger.info(f"[PROCESSOR] Starting full processing for interaction {interaction.id}")
+    
+    # 1. CRM Enquiry / Product matching
+    enquiry = None
+    try:
+        enquiry = detect_and_create_enquiry(interaction)
+    except Exception as e:
+        logger.error(f"[PROCESSOR] CRM Enquiry detection failed for interaction {interaction.id}: {e}", exc_info=True)
+        
+    # 2. Visual Automation Workflow Engine
+    try:
+        from apps.automations.engine import execute_automation
+        execute_automation(interaction)
+    except Exception as e:
+        logger.error(f"[PROCESSOR] Automation workflow execution failed for interaction {interaction.id}: {e}", exc_info=True)
+
+    return enquiry
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class InstagramWebhookView(View):
 
@@ -387,6 +412,12 @@ class InstagramWebhookView(View):
                             media_url = None
                             media_id = None
 
+                            reply_to = msg_data.get("reply_to")
+                            if reply_to and isinstance(reply_to, dict) and "story" in reply_to:
+                                story_info = reply_to["story"]
+                                if isinstance(story_info, dict):
+                                    media_id = story_info.get("id")
+
                             if attachments:
                                 attachment = attachments[0]
                                 attachment_type = attachment.get("type")
@@ -439,6 +470,13 @@ class InstagramWebhookView(View):
                                 }
                             )
 
+                            # Run automation engine synchronously for instant replies
+                            try:
+                                from apps.automations.engine import execute_automation
+                                execute_automation(interaction)
+                            except Exception as auto_err:
+                                logger.error(f"Error running automation synchronously: {auto_err}", exc_info=True)
+
                             # Trigger processing (tries asynchronous execution, falls back to synchronous execution)
                             if CELERY_AVAILABLE:
                                 try:
@@ -449,13 +487,13 @@ class InstagramWebhookView(View):
                                         f"Attempting synchronous fallback matching. Error: {e}"
                                     )
                                     try:
-                                        detect_and_create_enquiry(interaction)
+                                        process_interaction_all(interaction)
                                     except Exception as sync_err:
                                         logger.error(f"Synchronous fallback failed for interaction {interaction.id}: {sync_err}", exc_info=True)
                             else:
                                 logger.warning(f"Celery task is offline. Executing synchronous matching fallback.")
                                 try:
-                                    detect_and_create_enquiry(interaction)
+                                    process_interaction_all(interaction)
                                 except Exception as sync_err:
                                     logger.error(f"Synchronous execution failed for interaction {interaction.id}: {sync_err}", exc_info=True)
 
@@ -518,6 +556,13 @@ class InstagramWebhookView(View):
                                 metadata={"crm_processed": False, "postback": postback}
                             )
 
+                            # Run automation engine synchronously for instant replies
+                            try:
+                                from apps.automations.engine import execute_automation
+                                execute_automation(interaction)
+                            except Exception as auto_err:
+                                logger.error(f"Error running automation synchronously: {auto_err}", exc_info=True)
+
                             if CELERY_AVAILABLE:
                                 try:
                                     process_enquiry_background_task.delay(interaction.id)
@@ -527,13 +572,13 @@ class InstagramWebhookView(View):
                                         f"Attempting synchronous matching fallback. Error: {e}"
                                     )
                                     try:
-                                        detect_and_create_enquiry(interaction)
+                                        process_interaction_all(interaction)
                                     except Exception as sync_err:
                                         logger.error(f"Synchronous fallback failed for Postback: {sync_err}", exc_info=True)
                             else:
                                 logger.warning(f"Celery task is offline. Processing postback synchronously.")
                                 try:
-                                    detect_and_create_enquiry(interaction)
+                                    process_interaction_all(interaction)
                                 except Exception as sync_err:
                                     logger.error(f"Synchronous execution failed for Postback: {sync_err}", exc_info=True)
 
@@ -623,6 +668,13 @@ class InstagramWebhookView(View):
                                 }
                             )
 
+                            # Run automation engine synchronously for instant replies
+                            try:
+                                from apps.automations.engine import execute_automation
+                                execute_automation(interaction)
+                            except Exception as auto_err:
+                                logger.error(f"Error running automation synchronously: {auto_err}", exc_info=True)
+
                             if CELERY_AVAILABLE:
                                 try:
                                     process_enquiry_background_task.delay(interaction.id)
@@ -632,13 +684,13 @@ class InstagramWebhookView(View):
                                         f"Attempting synchronous fallback matching. Error: {e}"
                                     )
                                     try:
-                                        detect_and_create_enquiry(interaction)
+                                        process_interaction_all(interaction)
                                     except Exception as sync_err:
                                         logger.error(f"Synchronous fallback failed for Comment: {sync_err}", exc_info=True)
                             else:
                                 logger.warning(f"Celery task is offline. Processing Comment synchronously.")
                                 try:
-                                    detect_and_create_enquiry(interaction)
+                                    process_interaction_all(interaction)
                                 except Exception as sync_err:
                                     logger.error(f"Synchronous execution failed for Comment: {sync_err}", exc_info=True)
 
@@ -669,3 +721,441 @@ class InstagramWebhookView(View):
         incoming = signature_header[7:]
 
         return hmac.compare_digest(expected, incoming)
+
+import requests
+import threading
+
+def fetch_and_save_profile_pic_background(customer_id, access_token):
+    def task():
+        try:
+            from apps.crm.models import Customer
+            customer = Customer.objects.get(id=customer_id)
+            
+            needs_update = False
+            if not customer.profile_pic:
+                needs_update = True
+            else:
+                try:
+                    # Send a quick HEAD request to verify URL validity
+                    r = requests.head(customer.profile_pic, timeout=5)
+                    if r.status_code != 200:
+                        needs_update = True
+                except Exception:
+                    needs_update = True
+            
+            if needs_update:
+                url = f"https://graph.instagram.com/v25.0/{customer.instagram_scoped_id}"
+                params = {
+                    "fields": "profile_pic,username",
+                    "access_token": access_token
+                }
+                res = requests.get(url, params=params, timeout=10)
+                if res.status_code == 200:
+                    data = res.json()
+                    profile_pic = data.get("profile_pic")
+                    if profile_pic:
+                        customer.profile_pic = profile_pic
+                        customer.save(update_fields=["profile_pic"])
+                        logger.info(f"Successfully updated profile picture for customer {customer.username}")
+        except Exception as e:
+            logger.error(f"Error fetching profile pic in background: {e}")
+
+    threading.Thread(target=task).start()
+
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+
+class InstagramConversationsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        try:
+            user.refresh_from_db(fields=['active_instagram_account'])
+        except Exception:
+            pass
+        account = user.active_instagram_account
+        if not account:
+            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+            
+        if not account:
+            return Response({'error': 'No active Instagram account found'}, status=400)
+            
+        ig_user_id = account.instagram_user_id
+        access_token = account.access_token
+
+        if not ig_user_id or not access_token:
+            return Response({'error': 'Instagram account details incomplete'}, status=400)
+            
+        url = f"https://graph.instagram.com/v25.0/me/conversations?platform=instagram&fields=participants,updated_time,messages.limit(1){{message}}"
+        headers = {
+            'Authorization': f'Bearer {access_token}'
+        }
+        
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            conversations = data.get('data', [])
+            
+            # Enrich each conversation with 24-hour window status
+            from django.utils import timezone
+            from datetime import timedelta
+            from apps.crm.models import Customer, CustomerInteraction
+            
+            cutoff = timezone.now() - timedelta(hours=24)
+            customers = {c.instagram_scoped_id: c for c in Customer.objects.filter(owner=account)}
+            
+            for conv in conversations:
+                participants = conv.get('participants', {}).get('data', [])
+                recipient_id = None
+                for p in participants:
+                    if str(p.get('id')) != str(ig_user_id):
+                        recipient_id = p.get('id')
+                        break
+                
+                conv['is_within_24h_window'] = False
+                conv['profile_pic'] = None
+                if recipient_id:
+                    customer = customers.get(recipient_id)
+                    if customer:
+                        has_recent_inbound = CustomerInteraction.objects.filter(
+                            customer=customer,
+                            direction="INBOUND",
+                            platform_timestamp__gte=cutoff
+                        ).exists()
+                        conv['is_within_24h_window'] = has_recent_inbound
+                        conv['profile_pic'] = customer.profile_pic
+                        fetch_and_save_profile_pic_background(customer.id, access_token)
+            
+            return Response({
+                'conversations': conversations,
+                'business_username': account.username,
+                'business_id': ig_user_id
+            })
+        except requests.RequestException as e:
+            logger.error(f"Error fetching Instagram conversations: {e}")
+            err_msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                err_msg = e.response.text
+            return Response({'error': err_msg}, status=500)
+
+
+class InstagramConversationMessagesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, conversation_id, *args, **kwargs):
+        user = request.user
+        try:
+            user.refresh_from_db(fields=['active_instagram_account'])
+        except Exception:
+            pass
+        account = user.active_instagram_account
+        if not account:
+            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+            
+        if not account:
+            return Response({'error': 'No active Instagram account found'}, status=400)
+            
+        access_token = account.access_token
+        if not access_token:
+            return Response({'error': 'Instagram account details incomplete'}, status=400)
+            
+        url = f"https://graph.instagram.com/v25.0/{conversation_id}"
+        
+        # Get optional 'after' cursor from query params for pagination
+        after_cursor = request.query_params.get('after')
+        
+        params = {
+            "fields": "participants,messages{id,message,created_time,from,to,attachments,shares,story}",
+            "access_token": access_token
+        }
+        if after_cursor:
+            params["fields"] = f"participants,messages.after({after_cursor}){{id,message,created_time,from,to,attachments,shares,story}}"
+        
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            messages_conn = data.get('messages', {})
+            
+            # Check 24-hour window status
+            participants = data.get('participants', {}).get('data', [])
+            recipient_id = None
+            for p in participants:
+                if str(p.get('id')) != str(account.instagram_user_id):
+                    recipient_id = p.get('id')
+                    break
+
+            is_within_24h_window = False
+            last_interaction_time = None
+            
+            if recipient_id:
+                from django.utils import timezone
+                from datetime import timedelta
+                from apps.crm.models import Customer, CustomerInteraction
+                
+                customer = Customer.objects.filter(
+                    instagram_scoped_id=recipient_id,
+                    owner=account
+                ).first()
+                
+                if customer:
+                    cutoff = timezone.now() - timedelta(hours=24)
+                    last_inbound = CustomerInteraction.objects.filter(
+                        customer=customer,
+                        direction="INBOUND"
+                    ).order_by('-platform_timestamp').first()
+                    
+                    if last_inbound:
+                        last_interaction_time = last_inbound.platform_timestamp.isoformat()
+                        if last_inbound.platform_timestamp >= cutoff:
+                            is_within_24h_window = True
+                    
+                    fetch_and_save_profile_pic_background(customer.id, access_token)
+            
+            return Response({
+                'messages': messages_conn.get('data', []),
+                'next_cursor': messages_conn.get('paging', {}).get('cursors', {}).get('after'),
+                'is_within_24h_window': is_within_24h_window,
+                'last_interaction_time': last_interaction_time
+            })
+        except requests.RequestException as e:
+            logger.error(f"Error fetching Instagram messages for conversation {conversation_id}: {e}")
+            err_msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                err_msg = e.response.text
+            return Response({'error': err_msg}, status=500)
+
+
+class CustomerEnquiriesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        username = request.query_params.get("username")
+        if not username:
+            return Response({"error": "username parameter is required"}, status=400)
+
+        user = request.user
+        active_account = user.active_instagram_account
+        if not active_account:
+            active_account = user.instagram_accounts.filter(is_active=True).first()
+
+        if not active_account:
+            return Response({"error": "No active Instagram account found"}, status=400)
+
+        # Find the customer
+        customer = Customer.objects.filter(
+            username__iexact=username,
+            owner=active_account
+        ).first()
+
+        if not customer:
+            return Response({"enquiries": []})
+
+        # Fetch enquiries
+        enquiries = Enquiry.objects.filter(
+            customer=customer,
+            owner=active_account
+        ).prefetch_related('products__product').order_by('-created_at')
+
+        data = []
+        for eq in enquiries:
+            products_data = []
+            for ep in eq.products.all():
+                products_data.append({
+                    "enquiry_product_id": ep.id,
+                    "product_id": ep.product.id,
+                    "title": ep.product.title or "Untitled Product",
+                    "price": str(ep.product.price) if ep.product.price else None,
+                    "main_media_url": ep.product.main_media_url,
+                    "confidence_score": ep.confidence_score,
+                })
+            
+            data.append({
+                "id": eq.id,
+                "title": eq.title,
+                "status": eq.status,
+                "priority": eq.priority,
+                "media_id": eq.media_id,
+                "created_at": eq.created_at.isoformat(),
+                "products": products_data
+            })
+
+        return Response({"enquiries": data})
+
+
+class DeleteEnquiryProductView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        try:
+            user = request.user
+            active_account = user.active_instagram_account
+            if not active_account:
+                active_account = user.instagram_accounts.filter(is_active=True).first()
+
+            if not active_account:
+                return Response({"error": "No active Instagram account found"}, status=400)
+
+            # Ensure the enquiry product belongs to the user's active account
+            enquiry_product = EnquiryProduct.objects.get(
+                id=pk,
+                enquiry__owner=active_account
+            )
+            
+            enquiry = enquiry_product.enquiry
+            enquiry_product.delete()
+            
+            # If no products left in this enquiry, delete the enquiry as well
+            if not enquiry.products.exists():
+                enquiry.delete()
+                
+            return Response({"message": "Product removed from enquiry successfully"}, status=200)
+        except EnquiryProduct.DoesNotExist:
+            return Response({"error": "Enquiry product not found"}, status=404)
+
+
+class SendInstagramMessageView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, conversation_id):
+        user = request.user
+        active_account = user.active_instagram_account
+        if not active_account:
+            active_account = user.instagram_accounts.filter(is_active=True).first()
+
+        if not active_account or not active_account.access_token:
+            return Response({"error": "No active Instagram account connected"}, status=400)
+
+        recipient_id = request.data.get("recipient_id")
+        if not recipient_id:
+            # Fallback: try to extract from conversation_id (format: t_id1_id2)
+            parts = conversation_id.split("_")
+            if len(parts) >= 3 and parts[0] == "t":
+                bus_id = active_account.instagram_user_id or active_account.instagram_scoped_id
+                for p in parts[1:]:
+                    if p != bus_id:
+                        recipient_id = p
+                        break
+
+        if not recipient_id:
+            return Response({"error": "recipient_id is required"}, status=400)
+
+        # Enforce 24-hour messaging window
+        from django.utils import timezone
+        from datetime import timedelta
+        from apps.crm.models import Customer, CustomerInteraction
+
+        customer = Customer.objects.filter(
+            instagram_scoped_id=recipient_id,
+            owner=active_account
+        ).first()
+
+        if customer:
+            cutoff = timezone.now() - timedelta(hours=24)
+            has_recent_inbound = CustomerInteraction.objects.filter(
+                customer=customer,
+                direction="INBOUND",
+                platform_timestamp__gte=cutoff
+            ).exists()
+
+            if not has_recent_inbound:
+                return Response({
+                    "error": "Out of 24-hour messaging window. You can only send messages to users who have interacted with you in the last 24 hours."
+                }, status=403)
+        else:
+            # Fallback check: if we have NO customer record, we have no recorded inbound interaction in 24 hours
+            return Response({
+                "error": "No recent interaction found. You can only send messages to users who have interacted with you in the last 24 hours."
+            }, status=403)
+
+        message_payload = request.data.get("message")
+        if not message_payload:
+            return Response({"error": "message payload is required"}, status=400)
+
+        is_basic = active_account.access_token.startswith("IGAA")
+        host = "graph.instagram.com" if is_basic else "graph.facebook.com"
+        url = f"https://{host}/v25.0/me/messages"
+
+        headers = {
+            "Authorization": f"Bearer {active_account.access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "recipient": {"id": recipient_id},
+            "message": message_payload
+        }
+
+        try:
+            r = requests.post(url, json=payload, headers=headers, timeout=15)
+            r.raise_for_status()
+            response_data = r.json()
+            
+            # Log the outbound interaction in our DB
+            try:
+                customer = Customer.objects.filter(
+                    instagram_scoped_id=recipient_id,
+                    owner=active_account
+                ).first()
+                if customer:
+                    text_content = message_payload.get("text", "")
+                    msg_type = "TEXT"
+                    
+                    if "attachment" in message_payload:
+                        att = message_payload["attachment"]
+                        if att.get("type") == "template":
+                            tpl = att.get("payload", {})
+                            if tpl.get("template_type") == "button":
+                                msg_type = "BUTTON_TEMPLATE"
+                                text_content = tpl.get("text", "")
+                            elif tpl.get("template_type") == "generic":
+                                msg_type = "GENERIC_TEMPLATE"
+                                elems = tpl.get("elements", [])
+                                if elems:
+                                    text_content = elems[0].get("title", "")
+                    
+                    CustomerInteraction.objects.create(
+                        customer=customer,
+                        seller_account=active_account,
+                        event_type="DM",
+                        direction="OUTBOUND",
+                        message_type=msg_type,
+                        message_text=text_content,
+                        instagram_event_id=response_data.get("message_id"),
+                        platform_timestamp=timezone.now(),
+                        metadata={"sent_payload": payload}
+                    )
+            except Exception as db_err:
+                logger.error(f"Error logging outbound interaction: {db_err}")
+
+            return Response(response_data)
+        except requests.RequestException as e:
+            logger.error(f"Error sending Instagram message: {e}")
+            err_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                err_msg = e.response.text
+            return Response({"error": err_msg}, status=500)
+
+
+class UploadImageView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        import os
+        from django.conf import settings
+        from django.core.files.storage import default_storage
+        from django.core.files.base import ContentFile
+
+        file_obj = request.FILES.get('image')
+        if not file_obj:
+            return Response({"error": "No image file provided"}, status=400)
+        
+        path = default_storage.save(os.path.join('uploads', file_obj.name), ContentFile(file_obj.read()))
+        file_url = request.build_absolute_uri(settings.MEDIA_URL + path)
+        
+        return Response({"url": file_url})

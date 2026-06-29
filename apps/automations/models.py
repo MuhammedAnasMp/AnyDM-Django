@@ -28,10 +28,7 @@ class AutomationCampaign(models.Model):
     timezone    = models.CharField(max_length=50, default='UTC',
                                    help_text="IANA timezone e.g. Africa/Cairo, UTC+3")
 
-    global_rate_limit = models.JSONField(
-        default=dict, blank=True,
-        help_text='{"scope": "global", "limit": 1000, "window_seconds": 86400}'
-    )
+
 
     start_at   = models.DateTimeField(null=True, blank=True)
     end_at     = models.DateTimeField(null=True, blank=True)
@@ -123,12 +120,7 @@ class AutomationRule(models.Model):
     rule_type = models.CharField(max_length=40, choices=RULE_TYPES)
     status    = models.CharField(max_length=20, choices=STATUS, default='draft')
 
-    # ── Priority (1 = highest, 100 = lowest) ─────────────────────────────────
-    priority      = models.PositiveSmallIntegerField(default=50)
-    stop_on_match = models.BooleanField(
-        default=True,
-        help_text="Stop evaluating lower-priority rules once this one matches"
-    )
+
 
     # ── Target ───────────────────────────────────────────────────────────────
     target_mode       = models.CharField(max_length=20, choices=TARGET_MODES, default='every')
@@ -140,13 +132,7 @@ class AutomationRule(models.Model):
     condition_match_type = models.CharField(max_length=20, choices=MATCH_TYPES, default='contains')
     condition_keywords   = models.JSONField(default=list, blank=True)
 
-    # ── Deduplication ────────────────────────────────────────────────────────
-    deduplication_enabled        = models.BooleanField(default=True)
-    deduplication_window_seconds = models.PositiveIntegerField(default=86400)
-    deduplication_unique_per     = models.JSONField(
-        default=list,
-        help_text='["user_id", "rule_id"] or ["user_id", "media_id"]'
-    )
+
 
     # ── Follower gate ─────────────────────────────────────────────────────────
     follower_gate_enabled  = models.BooleanField(default=False)
@@ -155,6 +141,9 @@ class AutomationRule(models.Model):
     # ── Schedule ──────────────────────────────────────────────────────────────
     start_at = models.DateTimeField(null=True, blank=True)
     end_at   = models.DateTimeField(null=True, blank=True)
+
+    # ── Visual Layout ─────────────────────────────────────────────────────────
+    visual_data = models.JSONField(default=dict, blank=True, help_text="React Flow nodes and edges layout")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -165,10 +154,10 @@ class AutomationRule(models.Model):
         return RULE_TYPE_TO_TRIGGER.get(self.rule_type)
 
     def __str__(self):
-        return f"[{self.get_rule_type_display()}] {self.name} (priority={self.priority})"
+        return f"[{self.get_rule_type_display()}] {self.name}"
 
     class Meta:
-        ordering = ['priority', '-created_at']
+        ordering = ['-created_at']
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -218,11 +207,7 @@ class AutomationAction(models.Model):
         related_name='automation_actions'
     )
 
-    # ── Rate limit ────────────────────────────────────────────────────────────
-    rate_limit = models.JSONField(
-        default=dict,
-        help_text='{"scope": "user", "limit": 1, "window_seconds": 86400}'
-    )
+
 
     # ── Error handling ─────────────────────────────────────────────────────────
     on_fail = models.JSONField(

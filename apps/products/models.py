@@ -196,3 +196,98 @@ class ProductMedia(models.Model):
 
     def __str__(self):
         return f"Media #{self.id} for Product #{self.product_id}"
+
+
+import hashlib
+import time
+import requests
+import logging
+import os
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
+
+logger = logging.getLogger(__name__)
+
+def delete_from_cloudinary(public_id, resource_type="image"):
+    # Read credentials from settings or environment
+    from django.conf import settings
+    cloud_name = getattr(settings, 'CLOUDINARY_CLOUD_NAME', os.environ.get('CLOUDINARY_CLOUD_NAME', 'dx5bqewfx'))
+    api_key = getattr(settings, 'CLOUDINARY_API_KEY', os.environ.get('CLOUDINARY_API_KEY'))
+    api_secret = getattr(settings, 'CLOUDINARY_API_SECRET', os.environ.get('CLOUDINARY_API_SECRET'))
+    
+    if not all([cloud_name, api_key, api_secret]):
+        logger.warning("Cloudinary credentials not fully configured. Skipping deletion of %s", public_id)
+        return False
+        
+    timestamp = int(time.time())
+    
+    # Create parameter string to sign (alphabetical order)
+    params_to_sign = f"public_id={public_id}&timestamp={timestamp}"
+    to_sign = f"{params_to_sign}{api_secret}"
+    
+    # Compute SHA-1 signature
+    signature = hashlib.sha1(to_sign.encode('utf-8')).hexdigest()
+    
+    url = f"https://api.cloudinary.com/v1_1/{cloud_name}/{resource_type}/destroy"
+    payload = {
+        "public_id": public_id,
+        "timestamp": timestamp,
+        "api_key": api_key,
+        "signature": signature
+    }
+    
+    try:
+        response = requests.post(url, data=payload)
+        response.raise_for_status()
+        result = response.json()
+        if result.get("result") == "ok":
+            logger.info("Successfully deleted %s (%s) from Cloudinary", public_id, resource_type)
+            return True
+        else:
+            logger.error("Failed to delete %s from Cloudinary: %s", public_id, result)
+            return False
+    except Exception as e:
+        logger.error("Error calling Cloudinary destroy API for %s: %s", public_id, e)
+        return False
+
+def get_public_id_and_type(instance):
+    # Try to extract from cloudinary_metadata
+    metadata = instance.cloudinary_metadata
+    if metadata and isinstance(metadata, dict):
+        public_id = metadata.get("public_id")
+        resource_type = metadata.get("resource_type", "image")
+        if public_id:
+            return public_id, resource_type
+            
+    # Fallback: extract public_id from media_url/main_media_url if it is a Cloudinary URL
+    url = getattr(instance, 'media_url', None) or getattr(instance, 'main_media_url', None)
+    if url and "res.cloudinary.com" in url:
+        try:
+            parts = url.split("/upload/")
+            if len(parts) > 1:
+                path_after_upload = parts[1]
+                # Remove version prefix (e.g. "v123456789/") if present
+                if path_after_upload.startswith("v"):
+                    path_after_upload = "/".join(path_after_upload.split("/")[1:])
+                # Remove file extension
+                public_id = path_after_upload.rsplit(".", 1)[0]
+                
+                # Determine resource type
+                resource_type = "video" if getattr(instance, 'media_type', None) == "VIDEO" else "image"
+                return public_id, resource_type
+        except Exception:
+            pass
+            
+    return None, None
+
+@receiver(post_delete, sender=Product)
+def delete_product_cloudinary_media(sender, instance, **kwargs):
+    public_id, resource_type = get_public_id_and_type(instance)
+    if public_id:
+        delete_from_cloudinary(public_id, resource_type)
+
+@receiver(post_delete, sender=ProductMedia)
+def delete_product_media_cloudinary_media(sender, instance, **kwargs):
+    public_id, resource_type = get_public_id_and_type(instance)
+    if public_id:
+        delete_from_cloudinary(public_id, resource_type)

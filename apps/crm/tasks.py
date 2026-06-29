@@ -14,13 +14,13 @@ def process_enquiry_background_task(interaction_id):
     """
     
     from .models import CustomerInteraction
-    from .views import detect_and_create_enquiry
+    from .views import process_interaction_all
 
     try:
         interaction = CustomerInteraction.objects.get(id=interaction_id)
-        enquiry = detect_and_create_enquiry(interaction)
+        enquiry = process_interaction_all(interaction)
         if enquiry:
-            logger.info(f"Asynchronous matching succeeded for Enquiry ID: {enquiry.id}")
+            logger.info(f"Asynchronous processing succeeded for Enquiry ID: {enquiry.id}")
     except CustomerInteraction.DoesNotExist:
         logger.error(f"CustomerInteraction with ID {interaction_id} not found.")
     except Exception as e:

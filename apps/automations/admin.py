@@ -14,7 +14,7 @@ from .models import (
 class AutomationActionInline(admin.TabularInline):
     model = AutomationAction
     extra = 1
-    fields = ('order', 'action_type', 'dm_format', 'message_mode', 'messages', 'rate_limit')
+    fields = ('order', 'action_type', 'dm_format', 'message_mode', 'messages')
 
 
 class GiveawayConfigInline(admin.StackedInline):
@@ -39,10 +39,10 @@ class AutomationCampaignAdmin(admin.ModelAdmin):
 
 @admin.register(AutomationRule)
 class AutomationRuleAdmin(admin.ModelAdmin):
-    list_display  = ('name', 'rule_type', 'status', 'priority', 'stop_on_match', 'seller')
+    list_display  = ('name', 'rule_type', 'status', 'seller')
     list_filter   = ('rule_type', 'status')
     search_fields = ('name',)
-    ordering      = ('priority',)
+    ordering      = ('-id',)
     inlines       = [AutomationActionInline, GiveawayConfigInline]
 
 

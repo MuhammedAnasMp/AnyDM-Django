@@ -107,10 +107,12 @@ def sync_customer_profile(customer, force=False):
 
         return customer
 
+    except requests.exceptions.RequestException as e:
+        if e.response is not None and e.response.status_code >= 500:
+            logger.warning(f"Instagram API Server Error for customer {customer.id} (Status {e.response.status_code}). Skipping sync.")
+        else:
+            logger.error(f"API Error syncing customer {customer.id}: {e}")
     except Exception as e:
-        logger.error(
-            f"Failed syncing customer {customer.id}: {e}",
-            exc_info=True
-        )
+        logger.error(f"Failed syncing customer {customer.id}: {e}", exc_info=True)
 
     return customer
