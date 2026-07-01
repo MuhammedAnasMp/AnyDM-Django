@@ -61,3 +61,15 @@ def reconcile_unprocessed_interactions():
 def sync_customer_profile_task(customer_id):
     customer = Customer.objects.get(id=customer_id)
     sync_customer_profile(customer)
+
+
+@shared_task
+def process_ai_response_task(interaction_id):
+    """
+    Asynchronous Celery task to trigger AI response generation using Gemini.
+    """
+    from .ai_assistant import process_ai_response
+    try:
+        process_ai_response(interaction_id)
+    except Exception as e:
+        logger.error(f"Error in process_ai_response_task for interaction {interaction_id}: {e}", exc_info=True)

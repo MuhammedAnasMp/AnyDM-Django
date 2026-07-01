@@ -141,7 +141,8 @@ class AutomationListCreateView(APIView):
                 action_type=action_type,
                 dm_format=dm_format,
                 messages=messages,
-                message_mode=a_data.get('message_mode', 'random')
+                message_mode=a_data.get('message_mode', 'random'),
+                parent_event=a_data.get('parent_event')
             )
 
             # Store format-specific payloads
@@ -156,7 +157,7 @@ class AutomationListCreateView(APIView):
                     quick_replies.append({
                         "content_type": "text",
                         "title": title[:20],
-                        "payload": f"QR_PAYLOAD_{title[:20].upper()}"
+                        "payload": f"QR_{title[:20].upper().replace(' ', '_')}"
                     })
                 action.quick_reply_payload = {"quick_replies": quick_replies}
                 if qr_text:
@@ -214,6 +215,36 @@ class AutomationListCreateView(APIView):
                     cleaned_elements.append(elem_copy)
                 
                 action.generic_template_payload = {"elements": cleaned_elements}
+
+            elif dm_format == 'attachment':
+                attachments_raw = a_data.get('attachments', [])
+                items = []
+                if isinstance(attachments_raw, str) and attachments_raw.strip():
+                    try:
+                        import json
+                        items = json.loads(attachments_raw)
+                    except Exception:
+                        pass
+                elif isinstance(attachments_raw, list):
+                    items = attachments_raw
+
+                # Convert to structured attachment objects
+                structured_attachments = []
+                for item in items:
+                    if isinstance(item, str):
+                        # Backward compatibility: convert flat string URLs to image attachments
+                        structured_attachments.append({
+                            "type": "image",
+                            "url": item
+                        })
+                    elif isinstance(item, dict):
+                        structured_attachments.append({
+                            "type": item.get("type", "image"),
+                            "url": item.get("url"),
+                            "media_id": item.get("media_id"),
+                            "sticker_id": item.get("sticker_id")
+                        })
+                action.attachment_payload = structured_attachments
 
             action.save()
 

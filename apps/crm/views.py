@@ -19,7 +19,7 @@ from django.core.cache import cache
 
 from apps.accounts.models import InstagramAccount
 from apps.products.models import Product
-from .models import CustomerInteraction, Customer, Enquiry, EnquiryProduct
+from .models import CustomerInteraction, Customer, Enquiry, EnquiryProduct, AIAssistantConfig
 from .tasks import sync_customer_profile_task
 
 # Safe import and compilation stub definition to avoid NameErrors
@@ -451,10 +451,15 @@ class InstagramWebhookView(View):
 
                                 media_url = payload.get("url")
 
+                            quick_reply = msg_data.get("quick_reply")
+                            current_event_type = "CLICK" if quick_reply else "DM"
+                            if quick_reply:
+                                message_type = "QUICK_REPLY"
+
                             interaction = CustomerInteraction.objects.create(
                                 customer=customer,
                                 seller_account=owner_account,
-                                event_type="DM",
+                                event_type=current_event_type,
                                 direction=direction,
                                 message_type=message_type,
                                 message_text=text_content,
@@ -467,6 +472,7 @@ class InstagramWebhookView(View):
                                     "attachments": attachments,
                                     "reply_to": msg_data.get("reply_to"),
                                     "is_echo": msg_data.get("is_echo", False),
+                                    "quick_reply": quick_reply,
                                 }
                             )
 
@@ -496,6 +502,24 @@ class InstagramWebhookView(View):
                                     process_interaction_all(interaction)
                                 except Exception as sync_err:
                                     logger.error(f"Synchronous execution failed for interaction {interaction.id}: {sync_err}", exc_info=True)
+
+                            # Trigger AI Support Assistant if active and inbound
+                            if direction == "INBOUND" and not msg_data.get("is_echo", False):
+                                ai_config = getattr(owner_account, "ai_config", None)
+                                if ai_config and ai_config.is_ai_mode_on and getattr(customer, "is_ai_enabled", True):
+                                    if CELERY_AVAILABLE:
+                                        try:
+                                            from .tasks import process_ai_response_task
+                                            process_ai_response_task.delay(interaction.id)
+                                        except Exception as celery_err:
+                                            logger.error(f"Failed to queue process_ai_response_task via Celery: {celery_err}")
+                                            import threading
+                                            from .ai_assistant import process_ai_response
+                                            threading.Thread(target=process_ai_response, args=(interaction.id,)).start()
+                                    else:
+                                        import threading
+                                        from .ai_assistant import process_ai_response
+                                        threading.Thread(target=process_ai_response, args=(interaction.id,)).start()
 
                         # -------------------------
                         # REACTION
@@ -581,6 +605,24 @@ class InstagramWebhookView(View):
                                     process_interaction_all(interaction)
                                 except Exception as sync_err:
                                     logger.error(f"Synchronous execution failed for Postback: {sync_err}", exc_info=True)
+
+                            # Trigger AI Support Assistant if active and inbound
+                            if direction == "INBOUND":
+                                ai_config = getattr(owner_account, "ai_config", None)
+                                if ai_config and ai_config.is_ai_mode_on and getattr(customer, "is_ai_enabled", True):
+                                    if CELERY_AVAILABLE:
+                                        try:
+                                            from .tasks import process_ai_response_task
+                                            process_ai_response_task.delay(interaction.id)
+                                        except Exception as celery_err:
+                                            logger.error(f"Failed to queue process_ai_response_task via Celery for postback: {celery_err}")
+                                            import threading
+                                            from .ai_assistant import process_ai_response
+                                            threading.Thread(target=process_ai_response, args=(interaction.id,)).start()
+                                    else:
+                                        import threading
+                                        from .ai_assistant import process_ai_response
+                                        threading.Thread(target=process_ai_response, args=(interaction.id,)).start()
 
                         # -------------------------
                         # READ
@@ -819,6 +861,7 @@ class InstagramConversationsView(APIView):
                 
                 conv['is_within_24h_window'] = False
                 conv['profile_pic'] = None
+                conv['is_ai_enabled'] = True
                 if recipient_id:
                     customer = customers.get(recipient_id)
                     if customer:
@@ -829,8 +872,29 @@ class InstagramConversationsView(APIView):
                         ).exists()
                         conv['is_within_24h_window'] = has_recent_inbound
                         conv['profile_pic'] = customer.profile_pic
+                        conv['is_ai_enabled'] = getattr(customer, 'is_ai_enabled', True)
                         fetch_and_save_profile_pic_background(customer.id, access_token)
             
+            # Enrich last message if empty using database CustomerInteraction
+            last_msg_ids = []
+            for conv in conversations:
+                msgs = conv.get('messages', {}).get('data', [])
+                if msgs:
+                    last_msg_ids.append(msgs[0].get('id'))
+            
+            if last_msg_ids:
+                db_interactions = CustomerInteraction.objects.filter(instagram_event_id__in=last_msg_ids)
+                interaction_map = {intr.instagram_event_id: intr for intr in db_interactions}
+                
+                for conv in conversations:
+                    msgs = conv.get('messages', {}).get('data', [])
+                    if msgs:
+                        msg = msgs[0]
+                        intr = interaction_map.get(msg.get('id'))
+                        if intr:
+                            if not msg.get('message') and intr.message_text:
+                                msg['message'] = intr.message_text
+
             return Response({
                 'conversations': conversations,
                 'business_username': account.username,
@@ -842,6 +906,42 @@ class InstagramConversationsView(APIView):
             if hasattr(e, 'response') and e.response is not None:
                 err_msg = e.response.text
             return Response({'error': err_msg}, status=500)
+
+
+def get_media_type(url):
+    import hashlib
+    import requests
+    from django.core.cache import cache
+    
+    cache_key = f"media_type_v2_{hashlib.md5(url.encode('utf-8')).hexdigest()}"
+    media_type = cache.get(cache_key)
+    if media_type:
+        return media_type
+    
+    try:
+        r = requests.head(url, timeout=1.5)
+        content_type = r.headers.get("Content-Type", "").lower()
+        if "video" in content_type:
+            media_type = "video"
+        elif "audio" in content_type:
+            media_type = "audio"
+        else:
+            media_type = "image"
+    except Exception:
+        try:
+            r = requests.get(url, stream=True, timeout=1.5)
+            content_type = r.headers.get("Content-Type", "").lower()
+            if "video" in content_type:
+                media_type = "video"
+            elif "audio" in content_type:
+                media_type = "audio"
+            else:
+                media_type = "image"
+        except Exception:
+            media_type = "image"
+            
+    cache.set(cache_key, media_type, timeout=86400)
+    return media_type
 
 
 class InstagramConversationMessagesView(APIView):
@@ -907,7 +1007,8 @@ class InstagramConversationMessagesView(APIView):
                     cutoff = timezone.now() - timedelta(hours=24)
                     last_inbound = CustomerInteraction.objects.filter(
                         customer=customer,
-                        direction="INBOUND"
+                        direction="INBOUND",
+                        event_type__in=["DM", "STORY_REPLY"]
                     ).order_by('-platform_timestamp').first()
                     
                     if last_inbound:
@@ -917,8 +1018,58 @@ class InstagramConversationMessagesView(APIView):
                     
                     fetch_and_save_profile_pic_background(customer.id, access_token)
             
+            messages = messages_conn.get('data', [])
+            if messages:
+                msg_ids = [m.get('id') for m in messages if m.get('id')]
+                db_interactions = CustomerInteraction.objects.filter(instagram_event_id__in=msg_ids)
+                interaction_map = {intr.instagram_event_id: intr for intr in db_interactions}
+                
+                for msg in messages:
+                    mid = msg.get('id')
+                    intr = interaction_map.get(mid)
+                    if intr:
+                        if not msg.get('message') and intr.message_text:
+                            msg['message'] = intr.message_text
+                        
+                        # Enrich attachments if not present
+                        if not msg.get('attachments') and not msg.get('shares'):
+                            if intr.media_url:
+                                m_type = get_media_type(intr.media_url)
+                                key_name = f"{m_type}_data"
+                                
+                                msg["attachments"] = {
+                                    "data": [{
+                                        key_name: {"url": intr.media_url}
+                                    }]
+                                }
+                            elif intr.message_type == 'GENERIC_TEMPLATE':
+                                elements = []
+                                if isinstance(intr.render_payload, list):
+                                    elements = intr.render_payload
+                                elif isinstance(intr.render_payload, dict):
+                                    elements = intr.render_payload.get("elements", [])
+                                elif intr.metadata and "sent_payload" in intr.metadata:
+                                    sent = intr.metadata["sent_payload"]
+                                    elements = sent.get("message", {}).get("attachment", {}).get("payload", {}).get("elements", [])
+                                
+                                if elements:
+                                    msg["attachments"] = {
+                                        "data": [{
+                                            "generic_template": {
+                                                "title": elements[0].get("title", ""),
+                                                "subtitle": elements[0].get("subtitle", ""),
+                                                "image_url": elements[0].get("image_url", ""),
+                                                "cta": [{
+                                                    "title": btn.get("title", ""),
+                                                    "type": btn.get("type", "web_url"),
+                                                    "url": btn.get("url", "")
+                                                } for btn in elements[0].get("buttons", [])]
+                                            }
+                                        }]
+                                    }
+
             return Response({
-                'messages': messages_conn.get('data', []),
+                'messages': messages,
                 'next_cursor': messages_conn.get('paging', {}).get('cursors', {}).get('after'),
                 'is_within_24h_window': is_within_24h_window,
                 'last_interaction_time': last_interaction_time
@@ -1060,6 +1211,7 @@ class SendInstagramMessageView(APIView):
             has_recent_inbound = CustomerInteraction.objects.filter(
                 customer=customer,
                 direction="INBOUND",
+                event_type__in=["DM", "STORY_REPLY"],
                 platform_timestamp__gte=cutoff
             ).exists()
 
@@ -1078,8 +1230,11 @@ class SendInstagramMessageView(APIView):
             return Response({"error": "message payload is required"}, status=400)
 
         is_basic = active_account.access_token.startswith("IGAA")
-        host = "graph.instagram.com" if is_basic else "graph.facebook.com"
-        url = f"https://{host}/v25.0/me/messages"
+        if is_basic:
+            ig_user_id = active_account.instagram_scoped_id or active_account.instagram_user_id
+            url = f"https://graph.instagram.com/v25.0/{ig_user_id}/messages"
+        else:
+            url = "https://graph.facebook.com/v25.0/me/messages"
 
         headers = {
             "Authorization": f"Bearer {active_account.access_token}",
@@ -1159,3 +1314,407 @@ class UploadImageView(APIView):
         file_url = request.build_absolute_uri(settings.MEDIA_URL + path)
         
         return Response({"url": file_url})
+
+
+class CustomerListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.core.paginator import Paginator
+        from django.db.models import Q
+        from django.utils import timezone
+        import datetime
+        from apps.crm.models import Customer, CustomerInteraction
+
+        user = request.user
+        active_account = user.active_instagram_account
+        if not active_account:
+            active_account = user.instagram_accounts.filter(is_active=True).first()
+
+        if not active_account:
+            return Response({"results": [], "count": 0, "total_pages": 0, "current_page": 1}, status=200)
+
+        queryset = Customer.objects.filter(owner=active_account)
+
+        # Search filter
+        search_query = request.query_params.get('search', '').strip()
+        if search_query:
+            queryset = queryset.filter(
+                Q(username__icontains=search_query) | 
+                Q(full_name__icontains=search_query)
+            )
+
+        # Window filter
+        window_filter = request.query_params.get('window_filter', '').strip()
+        cutoff_24h = timezone.now() - datetime.timedelta(hours=24)
+        cutoff_23h = timezone.now() - datetime.timedelta(hours=23)
+
+        if window_filter == '24h':
+            queryset = queryset.filter(
+                interactions__direction='INBOUND',
+                interactions__event_type__in=['DM', 'STORY_REPLY'],
+                interactions__platform_timestamp__gte=cutoff_24h
+            ).distinct()
+        elif window_filter == '23h':
+            queryset = queryset.filter(
+                interactions__direction='INBOUND',
+                interactions__event_type__in=['DM', 'STORY_REPLY'],
+                interactions__platform_timestamp__gte=cutoff_23h
+            ).distinct()
+        elif window_filter == 'expired':
+            queryset = queryset.exclude(
+                interactions__direction='INBOUND',
+                interactions__event_type__in=['DM', 'STORY_REPLY'],
+                interactions__platform_timestamp__gte=cutoff_24h
+            ).distinct()
+
+        # Sort
+        sort_by = request.query_params.get('sort_by', '-last_interaction_at')
+        if sort_by in ['lead_score', '-lead_score', 'total_interactions', '-total_interactions', 'last_interaction_at', '-last_interaction_at', 'username', '-username']:
+            queryset = queryset.order_by(sort_by)
+        else:
+            queryset = queryset.order_by('-last_interaction_at')
+
+        # Pagination
+        limit = int(request.query_params.get('limit', 10))
+        page = int(request.query_params.get('page', 1))
+        
+        paginator = Paginator(queryset, limit)
+        try:
+            paginated_customers = paginator.page(page)
+        except Exception:
+            return Response({
+                "results": [],
+                "count": paginator.count,
+                "total_pages": paginator.num_pages,
+                "current_page": page
+            })
+
+        results = []
+        now = timezone.now()
+
+        for customer in paginated_customers:
+            last_inbound = CustomerInteraction.objects.filter(
+                customer=customer,
+                direction="INBOUND",
+                event_type__in=['DM', 'STORY_REPLY']
+            ).order_by('-platform_timestamp', '-created_at').first()
+
+            last_inbound_time = None
+            last_inbound_message = None
+            seconds_remaining_24h = 0
+            seconds_remaining_23h = 0
+            is_within_24h_window = False
+            is_within_23h_window = False
+
+            if last_inbound:
+                ts = last_inbound.platform_timestamp or last_inbound.created_at
+                last_inbound_time = ts.isoformat()
+                last_inbound_message = last_inbound.message_text
+                
+                time_elapsed = now - ts
+                seconds_elapsed = time_elapsed.total_seconds()
+                
+                seconds_remaining_24h = max(0, 24 * 3600 - seconds_elapsed)
+                seconds_remaining_23h = max(0, 23 * 3600 - seconds_elapsed)
+                
+                is_within_24h_window = seconds_remaining_24h > 0
+                is_within_23h_window = seconds_remaining_23h > 0
+
+            results.append({
+                "id": customer.id,
+                "instagram_scoped_id": customer.instagram_scoped_id,
+                "username": customer.username,
+                "full_name": customer.full_name,
+                "profile_pic": customer.profile_pic,
+                "total_interactions": customer.total_interactions,
+                "total_enquiries": customer.total_enquiries,
+                "lead_score": customer.lead_score,
+                "last_interaction_at": customer.last_interaction_at.isoformat() if customer.last_interaction_at else None,
+                "is_following_business": customer.is_following_business,
+                "is_business_follow_user": customer.is_business_follow_user,
+                "last_inbound_time": last_inbound_time,
+                "last_inbound_message": last_inbound_message,
+                "seconds_remaining_24h": seconds_remaining_24h,
+                "seconds_remaining_23h": seconds_remaining_23h,
+                "is_within_24h_window": is_within_24h_window,
+                "is_within_23h_window": is_within_23h_window
+            })
+
+        return Response({
+            "results": results,
+            "count": paginator.count,
+            "total_pages": paginator.num_pages,
+            "current_page": page
+        })
+
+
+class BroadcastMessageView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        import requests
+        from django.utils import timezone
+        import datetime
+        from apps.crm.models import Customer, CustomerInteraction
+
+        user = request.user
+        active_account = user.active_instagram_account
+        if not active_account:
+            active_account = user.instagram_accounts.filter(is_active=True).first()
+
+        if not active_account or not active_account.access_token:
+            return Response({"error": "No active Instagram account connected"}, status=400)
+
+        recipient_ids = request.data.get("recipient_ids", [])
+        message_payload = request.data.get("message_payload")
+
+        if not recipient_ids:
+            return Response({"error": "recipient_ids list is required"}, status=400)
+        if not message_payload:
+            return Response({"error": "message_payload is required"}, status=400)
+
+        results = []
+        success_count = 0
+        failed_count = 0
+
+        # Define endpoint URL
+        is_basic = active_account.access_token.startswith("IGAA")
+        if is_basic:
+            ig_user_id = active_account.instagram_scoped_id or active_account.instagram_user_id
+            url = f"https://graph.instagram.com/v25.0/{ig_user_id}/messages"
+        else:
+            url = "https://graph.facebook.com/v25.0/me/messages"
+
+        headers = {
+            "Authorization": f"Bearer {active_account.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        # 24-hour cutoff
+        cutoff = timezone.now() - datetime.timedelta(hours=24)
+
+        for recipient_id in recipient_ids:
+            customer = Customer.objects.filter(
+                instagram_scoped_id=recipient_id,
+                owner=active_account
+            ).first()
+
+            if not customer:
+                results.append({
+                    "recipient_id": recipient_id,
+                    "status": "failed",
+                    "error": "Customer profile not found in CRM"
+                })
+                failed_count += 1
+                continue
+
+            # Validate active 24-hour window
+            has_recent_inbound = CustomerInteraction.objects.filter(
+                customer=customer,
+                direction="INBOUND",
+                event_type__in=["DM", "STORY_REPLY"],
+                platform_timestamp__gte=cutoff
+            ).exists()
+
+            if not has_recent_inbound:
+                results.append({
+                    "recipient_id": recipient_id,
+                    "status": "failed",
+                    "error": "Outside 24-hour messaging window"
+                })
+                failed_count += 1
+                continue
+
+            # Send payload
+            payload = {
+                "recipient": {"id": recipient_id},
+                "message": message_payload
+            }
+
+            try:
+                r = requests.post(url, json=payload, headers=headers, timeout=15)
+                r.raise_for_status()
+                response_data = r.json()
+
+                # Determine message type and content for logging
+                msg_type = "TEXT"
+                text_content = message_payload.get("text", "")
+                
+                if "attachment" in message_payload:
+                    att = message_payload["attachment"]
+                    if att.get("type") == "template":
+                        tpl = att.get("payload", {})
+                        if tpl.get("template_type") == "button":
+                            msg_type = "BUTTON_TEMPLATE"
+                            text_content = tpl.get("text", "")
+                        elif tpl.get("template_type") == "generic":
+                            msg_type = "GENERIC_TEMPLATE"
+                            elems = tpl.get("elements", [])
+                            if elems:
+                                text_content = elems[0].get("title", "")
+
+                # Log interaction
+                CustomerInteraction.objects.create(
+                    customer=customer,
+                    seller_account=active_account,
+                    event_type="DM",
+                    direction="OUTBOUND",
+                    message_type=msg_type,
+                    message_text=text_content,
+                    message_source="WEBIU",
+                    instagram_event_id=response_data.get("message_id"),
+                    platform_timestamp=timezone.now(),
+                    metadata={"sent_payload": payload, "broadcast": True}
+                )
+
+                results.append({
+                    "recipient_id": recipient_id,
+                    "status": "success",
+                    "message_id": response_data.get("message_id")
+                })
+                success_count += 1
+            except Exception as e:
+                err_msg = str(e)
+                if hasattr(e, 'response') and e.response is not None:
+                    err_msg = e.response.text
+                results.append({
+                    "recipient_id": recipient_id,
+                    "status": "failed",
+                    "error": err_msg
+                })
+                failed_count += 1
+
+        return Response({
+            "results": results,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "total_count": len(recipient_ids)
+        })
+
+
+class AIAssistantConfigView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        account = user.active_instagram_account
+        if not account:
+            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+        if not account:
+            return Response({"error": "No active Instagram account connected"}, status=400)
+
+        config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
+        return Response({
+            "api_key": config.api_key,
+            "is_ai_mode_on": config.is_ai_mode_on,
+            "custom_instructions": config.custom_instructions,
+            "response_style": config.response_style,
+            "max_reply_length": config.max_reply_length,
+            "max_reply_count": config.max_reply_count,
+            "business_name": config.business_name,
+            "business_location": config.business_location,
+            "working_hours": config.working_hours,
+            "delivery_time": config.delivery_time,
+            "contact_details": config.contact_details,
+            "faqs": config.faqs,
+            "products_and_services": config.products_and_services,
+            "quick_replies": config.quick_replies,
+            "generic_templates": config.generic_templates
+        })
+
+    def post(self, request):
+        user = request.user
+        account = user.active_instagram_account
+        if not account:
+            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+        if not account:
+            return Response({"error": "No active Instagram account connected"}, status=400)
+
+        config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
+        
+        data = request.data
+        if "api_key" in data:
+            config.api_key = data.get("api_key")
+        if "is_ai_mode_on" in data:
+            config.is_ai_mode_on = bool(data.get("is_ai_mode_on"))
+        if "custom_instructions" in data:
+            config.custom_instructions = data.get("custom_instructions")
+        if "response_style" in data:
+            config.response_style = data.get("response_style")
+        if "max_reply_length" in data:
+            config.max_reply_length = int(data.get("max_reply_length"))
+        if "max_reply_count" in data:
+            config.max_reply_count = int(data.get("max_reply_count"))
+        if "business_name" in data:
+            config.business_name = data.get("business_name")
+        if "business_location" in data:
+            config.business_location = data.get("business_location")
+        if "working_hours" in data:
+            config.working_hours = data.get("working_hours")
+        if "delivery_time" in data:
+            config.delivery_time = data.get("delivery_time")
+        if "contact_details" in data:
+            config.contact_details = data.get("contact_details")
+        if "faqs" in data:
+            config.faqs = data.get("faqs")
+        if "products_and_services" in data:
+            config.products_and_services = data.get("products_and_services")
+        if "quick_replies" in data:
+            config.quick_replies = data.get("quick_replies")
+        if "generic_templates" in data:
+            config.generic_templates = data.get("generic_templates")
+
+        config.save()
+        return Response({"message": "AI settings saved successfully", "is_ai_mode_on": config.is_ai_mode_on})
+
+
+class AIAssistantToggleGlobalView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        account = user.active_instagram_account
+        if not account:
+            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+        if not account:
+            return Response({"error": "No active Instagram account connected"}, status=400)
+
+        config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
+        is_ai_mode_on = request.data.get("is_ai_mode_on")
+        if is_ai_mode_on is not None:
+            config.is_ai_mode_on = bool(is_ai_mode_on)
+        else:
+            config.is_ai_mode_on = not config.is_ai_mode_on
+            
+        config.save(update_fields=["is_ai_mode_on"])
+        return Response({"is_ai_mode_on": config.is_ai_mode_on})
+
+
+class ToggleCustomerAIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, customer_id):
+        user = request.user
+        account = user.active_instagram_account
+        if not account:
+            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+        if not account:
+            return Response({"error": "No active Instagram account connected"}, status=400)
+
+        customer, created = Customer.objects.get_or_create(
+            owner=account,
+            instagram_scoped_id=customer_id
+        )
+        
+        is_ai_enabled = request.data.get("is_ai_enabled")
+        if is_ai_enabled is not None:
+            customer.is_ai_enabled = bool(is_ai_enabled)
+        else:
+            customer.is_ai_enabled = not customer.is_ai_enabled
+            
+        customer.save(update_fields=["is_ai_enabled"])
+        return Response({
+            "customer_id": customer.instagram_scoped_id,
+            "is_ai_enabled": customer.is_ai_enabled
+        })

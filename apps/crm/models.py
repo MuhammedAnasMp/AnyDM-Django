@@ -41,6 +41,7 @@ class Customer(models.Model):
     lead_score = models.IntegerField(default=0)
 
     notes = models.TextField(blank=True, null=True)
+    is_ai_enabled = models.BooleanField(default=True)
 
     class Meta:
         unique_together = ('owner', 'instagram_scoped_id')
@@ -225,3 +226,36 @@ class EnquiryProduct(models.Model):
 
     def __str__(self):
         return f"{self.enquiry} - {self.product}"
+
+
+class AIAssistantConfig(models.Model):
+    instagram_account = models.OneToOneField(
+        'accounts.InstagramAccount',
+        on_delete=models.CASCADE,
+        related_name="ai_config"
+    )
+    api_key = models.TextField(blank=True, default="")
+    is_ai_mode_on = models.BooleanField(default=False)
+    custom_instructions = models.TextField(blank=True, default="")
+    response_style = models.CharField(max_length=50, default="Friendly")
+    max_reply_length = models.PositiveIntegerField(default=150)
+    max_reply_count = models.PositiveIntegerField(default=50)
+    
+    # Business-specific details
+    business_name = models.CharField(max_length=255, blank=True, default="")
+    business_location = models.TextField(blank=True, default="")
+    working_hours = models.TextField(blank=True, default="")
+    delivery_time = models.TextField(blank=True, default="")
+    contact_details = models.TextField(blank=True, default="")
+    faqs = models.JSONField(default=list, blank=True)
+    products_and_services = models.TextField(blank=True, default="")
+    
+    # Custom interaction options
+    quick_replies = models.JSONField(default=list, blank=True)
+    generic_templates = models.JSONField(default=list, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"AI Config for {self.instagram_account.username}"

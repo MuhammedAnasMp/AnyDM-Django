@@ -8,7 +8,12 @@ from .views import (
     CustomerEnquiriesView,
     DeleteEnquiryProductView,
     SendInstagramMessageView,
-    UploadImageView
+    UploadImageView,
+    CustomerListView,
+    BroadcastMessageView,
+    AIAssistantConfigView,
+    AIAssistantToggleGlobalView,
+    ToggleCustomerAIView
 )
 
 urlpatterns = [
@@ -19,4 +24,9 @@ urlpatterns = [
     path("upload-image/", UploadImageView.as_view(), name="upload-image"),
     path("enquiries/", CustomerEnquiriesView.as_view(), name="customer-enquiries"),
     path("enquiry-products/<int:pk>/", DeleteEnquiryProductView.as_view(), name="delete-enquiry-product"),
+    path("contacts/", CustomerListView.as_view(), name="customer-contacts"),
+    path("broadcast/", BroadcastMessageView.as_view(), name="crm-broadcast"),
+    path("ai-settings/", AIAssistantConfigView.as_view(), name="ai-settings"),
+    path("ai-settings/toggle-global/", AIAssistantToggleGlobalView.as_view(), name="ai-settings-toggle-global"),
+    path("customers/<str:customer_id>/toggle-ai/", ToggleCustomerAIView.as_view(), name="toggle-customer-ai"),
 ]

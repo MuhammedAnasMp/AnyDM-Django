@@ -177,6 +177,7 @@ class AutomationAction(models.Model):
         ('quick_reply',      'Quick Reply Buttons'),
         ('generic_template', 'Carousel / Generic Template'),
         ('button_template',  'Button Template'),
+        ('attachment',       'Media / Attachment'),
     ]
 
     MESSAGE_MODES = [
@@ -198,6 +199,7 @@ class AutomationAction(models.Model):
     quick_reply_payload      = models.JSONField(default=dict, blank=True)
     generic_template_payload = models.JSONField(default=dict, blank=True)
     button_template_payload  = models.JSONField(default=dict, blank=True)
+    attachment_payload       = models.JSONField(default=list, blank=True)
 
     # ── Product link (for product_inquiry rules) ──────────────────────────────
     linked_product = models.ForeignKey(
@@ -206,6 +208,9 @@ class AutomationAction(models.Model):
         null=True, blank=True,
         related_name='automation_actions'
     )
+
+    # ── Parent event (for multi-level flows / postback replies) ────────────────
+    parent_event = models.CharField(max_length=255, blank=True, null=True, db_index=True)
 
 
 
@@ -268,8 +273,21 @@ class AutomationAction(models.Model):
                         {'button_template_payload': 'postback buttons must include a "payload".'}
                     )
 
-        if not self.messages or not isinstance(self.messages, list):
-            raise ValidationError({'messages': 'At least one message string is required.'})
+        elif self.dm_format == 'attachment':
+            att = self.attachment_payload
+            if not isinstance(att, list):
+                raise ValidationError(
+                    {'attachment_payload': 'Must be a list of attachment items.'}
+                )
+            for item in att:
+                if not isinstance(item, dict) or 'type' not in item:
+                    raise ValidationError(
+                        {'attachment_payload': 'Each attachment must be a dict with a "type" field.'}
+                    )
+
+        if self.dm_format != 'attachment':
+            if not self.messages or not isinstance(self.messages, list):
+                raise ValidationError({'messages': 'At least one message string is required.'})
 
     class Meta:
         ordering = ['order']
