@@ -15,6 +15,52 @@ class User(AbstractUser):
         related_name='active_for_user'
     )
 
+    # Referral & Subscription fields
+    referral_code = models.CharField(max_length=50, unique=True, null=True, blank=True)
+    referred_by = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='referrals')
+    referred_by_set = models.BooleanField(default=False)
+    points = models.IntegerField(default=0)
+    plan = models.CharField(max_length=20, default='trial') # 'trial', 'pro', 'expired'
+    trial_days = models.IntegerField(default=14)
+    trial_start_date = models.DateTimeField(null=True, blank=True)
+    premium_expires_at = models.DateTimeField(null=True, blank=True)
+    has_extended_trial = models.BooleanField(default=False)
+
+    @property
+    def is_premium_active(self):
+        from django.utils import timezone
+        if self.plan == 'pro':
+            if self.premium_expires_at:
+                return timezone.now() < self.premium_expires_at
+            return True
+        if self.trial_start_date:
+            expiry = self.trial_start_date + timezone.timedelta(days=self.trial_days)
+            return timezone.now() < expiry
+        return False
+
+    @property
+    def trial_days_left(self):
+        from django.utils import timezone
+        if not self.trial_start_date:
+            return 0
+        expiry = self.trial_start_date + timezone.timedelta(days=self.trial_days)
+        delta = expiry - timezone.now()
+        return max(0, delta.days)
+
+    def save(self, *args, **kwargs):
+        import uuid
+        from django.utils import timezone
+        if not self.referral_code:
+            self.referral_code = f"REF-{uuid.uuid4().hex[:6].upper()}"
+        if not self.id and not self.trial_start_date:
+            self.trial_start_date = timezone.now()
+            try:
+                sys_settings = SystemSettings.get_settings()
+                self.trial_days = sys_settings.trial_days
+            except Exception:
+                self.trial_days = 14
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"User: {self.username}"
 
@@ -116,3 +162,23 @@ class WebsiteSettings(models.Model):
 
     def __str__(self):
         return f"WebsiteSettings for {self.instagram_account.username}"
+
+
+class SystemSettings(models.Model):
+    trial_days = models.IntegerField(default=14)
+    extend_days = models.IntegerField(default=7)
+    referral_points = models.IntegerField(default=50)
+    points_to_redeem = models.IntegerField(default=100)
+    premium_plan_price = models.DecimalField(max_digits=10, decimal_places=2, default=499.00)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def get_settings(cls):
+        settings, created = cls.objects.get_or_create(id=1)
+        return settings
+
+    def __str__(self):
+        return f"SystemSettings (Price: {self.premium_plan_price}, Referral Points: {self.referral_points})"
+

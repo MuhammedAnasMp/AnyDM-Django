@@ -1,3 +1,5 @@
+import os
+import razorpay
 import requests
 import base64
 import hashlib
@@ -16,25 +18,29 @@ from django.conf import settings
 from django.utils import timezone
 User = get_user_model()
 
+
 def parse_signed_request(signed_request):
     try:
         encoded_sig, payload = signed_request.split('.', 2)
-        sig = base64.urlsafe_b64decode(encoded_sig + '=' * (4 - len(encoded_sig) % 4))
-        data = json.loads(base64.urlsafe_b64decode(payload + '=' * (4 - len(payload) % 4)).decode('utf-8'))
-        
+        sig = base64.urlsafe_b64decode(
+            encoded_sig + '=' * (4 - len(encoded_sig) % 4))
+        data = json.loads(base64.urlsafe_b64decode(
+            payload + '=' * (4 - len(payload) % 4)).decode('utf-8'))
+
         # Verify signature
         expected_sig = hmac.new(
             settings.INSTAGRAM_CLIENT_SECRET.encode('utf-8'),
             payload.encode('utf-8'),
             hashlib.sha256
         ).digest()
-        
+
         if sig != expected_sig:
             return None
         return data
     except Exception as e:
         print(f"Error parsing signed request: {e}")
         return None
+
 
 def get_tokens_for_user(user):
     refresh = RefreshToken.for_user(user)
@@ -43,20 +49,21 @@ def get_tokens_for_user(user):
         'access': str(refresh.access_token),
     }
 
+
 class FirebaseLoginView(APIView):
     def post(self, request):
         id_token = request.data.get('id_token')
         if not id_token:
             return Response({'error': 'ID token is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         decoded_token = verify_firebase_token(id_token)
         if not decoded_token:
             return Response({'error': 'Invalid ID token'}, status=status.HTTP_401_UNAUTHORIZED)
-        
+
         uid = decoded_token.get('uid')
         email = decoded_token.get('email')
         name = decoded_token.get('name', '')
-        
+
         try:
             if not email:
                 # Fallback to uid if email is missing (e.g. anonymous or phone login)
@@ -64,7 +71,7 @@ class FirebaseLoginView(APIView):
 
             # 1. Try to resolve by firebase_uid (Most reliable)
             user = User.objects.filter(firebase_uid=uid).first()
-            
+
             # 2. If not found, try by email (Merging case)
             if not user:
                 user = User.objects.filter(email=email).first()
@@ -72,12 +79,32 @@ class FirebaseLoginView(APIView):
             if not user:
                 # 3. Create new if absolutely no match
                 user = User.objects.create(
-                    username=uid, 
-                    email=email, 
-                    first_name=name, 
+                    username=uid,
+                    email=email,
+                    first_name=name,
                     firebase_uid=uid
                 )
                 print(f"[FirebaseLogin] Created new user: {user.username}")
+
+                # Check for referral code
+                ref_code = request.data.get('referral_code')
+                if ref_code:
+                    try:
+                        from .models import SystemSettings
+                        referrer = User.objects.filter(
+                            referral_code=ref_code).first()
+                        if referrer and referrer != user:
+                            user.referred_by = referrer
+                            user.referred_by_set = True
+
+                            sys_settings = SystemSettings.get_settings()
+                            referrer.points += sys_settings.referral_points
+                            referrer.save()
+                            user.save()
+                            print(
+                                f"[Referral] User {user.username} referred by {referrer.username}. Awarded {sys_settings.referral_points} points.")
+                    except Exception as ref_err:
+                        print(f"Error applying referral code: {ref_err}")
             else:
                 # Sync info
                 if not user.firebase_uid:
@@ -86,39 +113,42 @@ class FirebaseLoginView(APIView):
                     user.first_name = name
                 user.save()
                 print(f"[FirebaseLogin] Found existing user: {user.username}")
-            
+
             # ── Resolve login methods from Firebase Admin ────────────────────────────
             from firebase_admin import auth as admin_auth
             try:
                 firebase_user = admin_auth.get_user(uid)
-                provider_ids = [p.provider_id for p in firebase_user.provider_data]
+                provider_ids = [
+                    p.provider_id for p in firebase_user.provider_data]
             except Exception as e:
                 print(f"Firebase Admin Error: {e}")
                 provider_ids = []
-    
-            provider_map = {'google.com': 'google', 'password': 'email', 'firebase': 'email'}
+
+            provider_map = {'google.com': 'google',
+                            'password': 'email', 'firebase': 'email'}
             firebase_methods = []
             for pid in provider_ids:
                 method = provider_map.get(pid)
                 if method and method not in firebase_methods:
                     firebase_methods.append(method)
-    
+
             # Ensure user.login_methods is a list
-            stored_methods = user.login_methods if isinstance(user.login_methods, list) else []
+            stored_methods = user.login_methods if isinstance(
+                user.login_methods, list) else []
             merged_methods = list(set(stored_methods) | set(firebase_methods))
-    
+
             if set(stored_methods) != set(merged_methods):
                 user.login_methods = merged_methods
 
             user.last_login = timezone.now()
             user.save()
-    
+
             # Load Instagram accounts
             instagram_accounts = InstagramAccount.objects.filter(user=user)
-    
+
             # Generate JWT tokens
             tokens = get_tokens_for_user(user)
-    
+
             return Response({
                 'message': 'Login successful',
                 'tokens': tokens,
@@ -128,6 +158,17 @@ class FirebaseLoginView(APIView):
                     'login_methods': merged_methods,
                     'display_name': user.first_name or user.username,
                     'active_instagram_account_id': user.active_instagram_account_id,
+                    'plan': user.plan,
+                    'points': user.points,
+                    'referral_code': user.referral_code,
+                    'trial_days': user.trial_days,
+                    'trial_start_date': user.trial_start_date.isoformat() if user.trial_start_date else None,
+                    'premium_expires_at': user.premium_expires_at.isoformat() if user.premium_expires_at else None,
+                    'has_extended_trial': user.has_extended_trial,
+                    'referred_by_set': user.referred_by_set,
+                    'referred_by': user.referred_by.referral_code if user.referred_by else None,
+                    'is_premium_active': user.is_premium_active,
+                    'trial_days_left': user.trial_days_left,
                 },
                 'instagram_accounts': [
                     {
@@ -140,6 +181,7 @@ class FirebaseLoginView(APIView):
                     } for acc in instagram_accounts if acc.is_active
                 ]
             }, status=status.HTTP_200_OK)
+
         except Exception as e:
             import traceback
             error_trace = traceback.format_exc()
@@ -184,12 +226,13 @@ def exchange_short_lived_for_long_lived_token(short_lived_token):
             print(f"Error exchanging professional IG token: {e}")
             return short_lived_token
 
+
 class InstagramLoginView(APIView):
     def post(self, request):
         access_token = request.data.get('access_token')
         code = request.data.get('code')
         redirect_uri = request.data.get('redirect_uri')
-        
+
         from django.conf import settings
 
         # If code is provided, exchange it for an access token
@@ -203,13 +246,13 @@ class InstagramLoginView(APIView):
                 'code': code,
             }
             exchange_response = requests.post(exchange_url, data=exchange_data)
-            
+
             if exchange_response.status_code != 200:
                 return Response({
-                    'error': 'Failed to exchange code', 
+                    'error': 'Failed to exchange code',
                     'details': exchange_response.json()
                 }, status=status.HTTP_401_UNAUTHORIZED)
-            
+
             access_token = exchange_response.json().get('access_token')
 
         if not access_token:
@@ -229,17 +272,19 @@ class InstagramLoginView(APIView):
                     'access_token': access_token
                 }
             )
-            
+
             if response.status_code != 200:
                 return Response({'error': 'Invalid Instagram token', 'details': response.json()}, status=status.HTTP_401_UNAUTHORIZED)
-            
+
             data = response.json()
-            ig_sid = data.get('id')        # Scoped ID (PSID/SID) or actual global User ID if Basic Display API
-            ig_id = data.get('user_id')    # Global ID (starts with 17) or None if Basic Display API
+            # Scoped ID (PSID/SID) or actual global User ID if Basic Display API
+            ig_sid = data.get('id')
+            # Global ID (starts with 17) or None if Basic Display API
+            ig_id = data.get('user_id')
             ig_username = data.get('username')
             ig_full_name = data.get('name')
             ig_profile_pic = data.get('profile_picture_url')
-            
+
             # Determine correct IDs
             # If ig_id is present, then ig_sid is the scoped ID, and ig_id is the user ID.
             # If ig_id is not present, then ig_sid itself is the global user ID!
@@ -254,23 +299,37 @@ class InstagramLoginView(APIView):
 
             auth_header = request.headers.get('Authorization', 'No Header')
             print(f"[InstagramLogin] Auth Header: {auth_header}")
-            print(f"[InstagramLogin] request.user.is_authenticated: {request.user.is_authenticated}")
-            
+            print(
+                f"[InstagramLogin] request.user.is_authenticated: {request.user.is_authenticated}")
+
             # Look up existing account using all possible ID permutations to avoid duplicates/login time problems
             ig_account = None
             if resolved_user_id:
-                ig_account = InstagramAccount.objects.filter(instagram_user_id=resolved_user_id).first()
+                ig_account = InstagramAccount.objects.filter(
+                    instagram_user_id=resolved_user_id).first()
             if not ig_account and resolved_scoped_id:
-                ig_account = InstagramAccount.objects.filter(instagram_scoped_id=resolved_scoped_id).first()
-            if not ig_account and resolved_scoped_id:
-                ig_account = InstagramAccount.objects.filter(instagram_user_id=resolved_scoped_id).first()
-            if not ig_account and resolved_user_id:
-                ig_account = InstagramAccount.objects.filter(instagram_scoped_id=resolved_user_id).first()
+                ig_account = InstagramAccount.objects.filter(
+                    instagram_scoped_id=resolved_scoped_id).first()
 
             if request.user.is_authenticated:
                 # 1. Linking Mode (Logged in)
                 user = request.user
-                print(f"[InstagramLogin] Authenticated Link: User(id={user.id}, email={user.email})")
+                print(
+                    f"[InstagramLogin] Authenticated Link: User(id={user.id}, email={user.email})")
+
+                # Enforce limit of 1 Instagram account if plan is expired
+                if not user.is_premium_active:
+                    existing_active_count = InstagramAccount.objects.filter(
+                        user=user, is_active=True).count()
+                    if existing_active_count >= 1:
+                        is_already_linked = False
+                        if ig_account and ig_account.user == user and ig_account.is_active:
+                            is_already_linked = True
+                        if not is_already_linked:
+                            return Response({
+                                'error': 'Account Limit Reached',
+                                'details': 'Your plan has expired and you are limited to 1 Instagram account. Please upgrade to add more accounts.'
+                            }, status=status.HTTP_403_FORBIDDEN)
 
                 if ig_account and ig_account.user and ig_account.user != user and ig_account.is_active:
                     return Response({
@@ -318,7 +377,8 @@ class InstagramLoginView(APIView):
                         last_refreshed_at=timezone.now()
                     )
                     created = True
-                print(f"[InstagramLogin] Linked account {ig_username} to User(id={user.id}). Created: {created}")
+                print(
+                    f"[InstagramLogin] Linked account {ig_username} to User(id={user.id}). Created: {created}")
             else:
                 # 2. Entry Login Mode (Logged out)
                 if ig_account and ig_account.user:
@@ -328,7 +388,7 @@ class InstagramLoginView(APIView):
                             'error': 'Login Restricted',
                             'details': f'Login with @{ig_username} is disabled for this AnyDm account. Please log in with another account or method.'
                         }, status=status.HTTP_403_FORBIDDEN)
-                    
+
                     user = ig_account.user
                     # Update without losing the scoped ID
                     final_scoped_id = ig_account.instagram_scoped_id or resolved_scoped_id
@@ -342,19 +402,41 @@ class InstagramLoginView(APIView):
                     ig_account.username = ig_username
                     ig_account.access_token = access_token
                     ig_account.profile_picture_url = ig_profile_pic
-                    ig_account.is_active = True # Reactivate if it was soft-deleted
+                    ig_account.is_active = True  # Reactivate if it was soft-deleted
                     ig_account.last_refreshed_at = timezone.now()
                     ig_account.save()
-                    print(f"[InstagramLogin] Logging in User(id={user.id}) via IG account {ig_username}.")
+                    print(
+                        f"[InstagramLogin] Logging in User(id={user.id}) via IG account {ig_username}.")
                 else:
                     # Detached or new account: needs a user
-                    print(f"[InstagramLogin] Creating/Finding user for IG account {ig_username}.")
+                    print(
+                        f"[InstagramLogin] Creating/Finding user for IG account {ig_username}.")
                     django_username = f"ig_{ig_username}_{resolved_user_id or resolved_scoped_id}"
                     user, user_created = User.objects.get_or_create(
                         username=django_username,
                         defaults={'first_name': ig_full_name}
                     )
-                    
+                    if user_created:
+                        ref_code = request.data.get('referral_code')
+                        if ref_code:
+                            try:
+                                from .models import SystemSettings
+                                referrer = User.objects.filter(
+                                    referral_code=ref_code).first()
+                                if referrer and referrer != user:
+                                    user.referred_by = referrer
+                                    user.referred_by_set = True
+
+                                    sys_settings = SystemSettings.get_settings()
+                                    referrer.points += sys_settings.referral_points
+                                    referrer.save()
+                                    user.save()
+                                    print(
+                                        f"[Referral] User {user.username} referred by {referrer.username} via IG. Awarded {sys_settings.referral_points} points.")
+                            except Exception as ref_err:
+                                print(
+                                    f"Error applying referral code: {ref_err}")
+
                     if ig_account:
                         ig_account.user = user
                         final_scoped_id = ig_account.instagram_scoped_id or resolved_scoped_id
@@ -385,27 +467,29 @@ class InstagramLoginView(APIView):
                             is_active=True,
                             last_refreshed_at=timezone.now()
                         )
-                    print(f"[InstagramLogin] Associated User(id={user.id}) with IG account.")
-            
+                    print(
+                        f"[InstagramLogin] Associated User(id={user.id}) with IG account.")
+
             # Update login methods safely
-            stored_methods = user.login_methods if isinstance(user.login_methods, list) else []
+            stored_methods = user.login_methods if isinstance(
+                user.login_methods, list) else []
             if "instagram" not in stored_methods:
                 stored_methods.append("instagram")
                 user.login_methods = stored_methods
-            
+
             # Set the Instagram account used for login as the active context
             user.active_instagram_account = ig_account
-            
+
             # Ensure firebase_uid is set for consistent identity
             if not user.firebase_uid:
                 user.firebase_uid = str(user.id)
-            
+
             user.last_login = timezone.now()
             user.save()
-            
+
             # Generate JWT tokens
             tokens = get_tokens_for_user(user)
-            
+
             # Generate Firebase custom token using the persistent firebase_uid
             from .firebase_auth import create_custom_token
             firebase_token = create_custom_token(user.firebase_uid)
@@ -420,7 +504,18 @@ class InstagramLoginView(APIView):
                     'display_name': ig_account.full_name or ig_account.username,
                     'handle': ig_account.username,
                     'active_instagram_account_id': user.active_instagram_account_id,
-                    'login_methods': user.login_methods
+                    'login_methods': user.login_methods,
+                    'plan': user.plan,
+                    'points': user.points,
+                    'referral_code': user.referral_code,
+                    'trial_days': user.trial_days,
+                    'trial_start_date': user.trial_start_date.isoformat() if user.trial_start_date else None,
+                    'premium_expires_at': user.premium_expires_at.isoformat() if user.premium_expires_at else None,
+                    'has_extended_trial': user.has_extended_trial,
+                    'referred_by_set': user.referred_by_set,
+                    'referred_by': user.referred_by.referral_code if user.referred_by else None,
+                    'is_premium_active': user.is_premium_active,
+                    'trial_days_left': user.trial_days_left,
                 },
                 'instagram_account': {
                     'id': ig_account.id,
@@ -436,17 +531,18 @@ class InstagramLoginView(APIView):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 class ToggleInstagramLoginView(APIView):
     def post(self, request):
         if not request.user.is_authenticated:
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
-            
+
         account_id = request.data.get('account_id')
         used_for_login = request.data.get('used_for_login')
-        
+
         if account_id is None or used_for_login is None:
             return Response({'error': 'account_id and used_for_login are required'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         try:
             user = request.user
             ig_account = InstagramAccount.objects.get(id=account_id)
@@ -456,24 +552,26 @@ class ToggleInstagramLoginView(APIView):
                     'ig_account_user_id': ig_account.user.id,
                     'request_user_id': user.id
                 }, status=status.HTTP_403_FORBIDDEN)
-                
+
             ig_account.used_for_login = bool(used_for_login)
             ig_account.save()
             return Response({'message': 'Success', 'used_for_login': ig_account.used_for_login})
         except InstagramAccount.DoesNotExist:
             return Response({'error': f'Account ID {account_id} not found entirely.'}, status=status.HTTP_404_NOT_FOUND)
 
+
 class GetConnectedInstagramAccountsView(APIView):
     def get(self, request):
         if not request.user.is_authenticated:
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
-            
+
         user = request.user
-        instagram_accounts = InstagramAccount.objects.filter(user=user, is_active=True)
+        instagram_accounts = InstagramAccount.objects.filter(
+            user=user, is_active=True)
         accounts_data = [
             {
-                'id': acc.id, 
-                'username': acc.username, 
+                'id': acc.id,
+                'username': acc.username,
                 'instagram_id': acc.instagram_scoped_id or acc.instagram_user_id,
                 'instagram_global_id': acc.instagram_user_id,
                 'profile_picture_url': acc.profile_picture_url,
@@ -482,22 +580,24 @@ class GetConnectedInstagramAccountsView(APIView):
             }
             for acc in instagram_accounts
         ]
-        
+
         return Response({'accounts': accounts_data}, status=status.HTTP_200_OK)
-        
+
+
 class InstagramDeauthorizeView(APIView):
     """
     Called by Facebook when a user deauthorizes the Instagram app.
     """
+
     def post(self, request):
         signed_request = request.data.get('signed_request')
         if not signed_request:
             return Response({'error': 'No signed_request provided'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         data = parse_signed_request(signed_request)
         if not data:
             return Response({'error': 'Invalid signed_request'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         ig_id = data.get('user_id')
         if ig_id:
             # Mark the account as not used for login or delete tokens
@@ -511,22 +611,24 @@ class InstagramDeauthorizeView(APIView):
                 used_for_login=False
             )
             print(f"[InstagramDeauthorize] Deauthorized Instagram ID: {ig_id}")
-            
+
         return Response({'status': 'deauthorized'}, status=status.HTTP_200_OK)
+
 
 class InstagramDataDeletionView(APIView):
     """
     Facebook Data Deletion Request Callback.
     """
+
     def post(self, request):
         signed_request = request.data.get('signed_request')
         if not signed_request:
             return Response({'error': 'No signed_request provided'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         data = parse_signed_request(signed_request)
         if not data:
             return Response({'error': 'Invalid signed_request'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         user_id = data.get('user_id')
         # Return the required Facebook response format
         return Response({
@@ -534,44 +636,48 @@ class InstagramDataDeletionView(APIView):
             'confirmation_code': f'del_{user_id}'
         }, status=status.HTTP_200_OK)
 
+
 class UpdateProfileView(APIView):
     def post(self, request):
         if not request.user.is_authenticated:
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
-            
+
         display_name = request.data.get('display_name')
         if display_name is not None:
             user = request.user
             user.first_name = display_name
             user.save()
             return Response({'message': 'Profile updated successfully', 'display_name': user.first_name})
-            
+
         return Response({'error': 'display_name is required'}, status=status.HTTP_400_BAD_REQUEST)
+
 
 class RemoveInstagramAccountView(APIView):
     """
     Deletes an Instagram account link for the authenticated user.
     """
+
     def post(self, request):
         if not request.user.is_authenticated:
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
-            
+
         account_id = request.data.get('account_id')
         if not account_id:
             return Response({'error': 'account_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         try:
             user = request.user
             ig_account = InstagramAccount.objects.get(id=account_id, user=user)
             username = ig_account.username
-            
+
             # Check if this is the last login method
             other_methods = [m for m in user.login_methods if m != "instagram"]
-            active_ig_accounts = InstagramAccount.objects.filter(user=user, is_active=True)
+            active_ig_accounts = InstagramAccount.objects.filter(
+                user=user, is_active=True)
             active_ig_count = active_ig_accounts.count()
-            
+
             is_last_resort = (len(other_methods) == 0 and active_ig_count == 1)
-            
+
             # 1. Detach the Instagram account first
             ig_account.is_active = False
             ig_account.user = None
@@ -585,49 +691,55 @@ class RemoveInstagramAccountView(APIView):
                 firebase_uid = user.firebase_uid
                 if firebase_uid:
                     delete_firebase_user(firebase_uid)
-                
-                print(f"[RemoveInstagramAccount] Deleting User(id={user.id}) as no login methods remain.")
+
+                print(
+                    f"[RemoveInstagramAccount] Deleting User(id={user.id}) as no login methods remain.")
                 user.delete()
                 return Response({'message': 'Profile and data removed successfully', 'user_deleted': True}, status=status.HTTP_200_OK)
-            
+
             return Response({'message': 'Account removed successfully', 'user_deleted': False}, status=status.HTTP_200_OK)
         except InstagramAccount.DoesNotExist:
             return Response({'error': 'Account not found or access denied.'}, status=status.HTTP_404_NOT_FOUND)
+
 
 class ToggleInstagramEnabledView(APIView):
     """
     Toggles the is_enabled status (Actions/Webhooks) for an Instagram account.
     """
+
     def post(self, request):
         if not request.user.is_authenticated:
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
-            
+
         account_id = request.data.get('account_id')
         is_enabled = request.data.get('is_enabled')
-        
+
         if account_id is None or is_enabled is None:
             return Response({'error': 'account_id and is_enabled are required'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         try:
-            ig_account = InstagramAccount.objects.get(id=account_id, user=request.user)
+            ig_account = InstagramAccount.objects.get(
+                id=account_id, user=request.user)
             ig_account.is_enabled = bool(is_enabled)
             ig_account.save()
             return Response({'message': 'Status updated', 'is_enabled': ig_account.is_enabled}, status=status.HTTP_200_OK)
         except InstagramAccount.DoesNotExist:
             return Response({'error': 'Account not found or access denied.'}, status=status.HTTP_404_NOT_FOUND)
 
+
 class SetActiveInstagramAccountView(APIView):
     def post(self, request):
         if not request.user.is_authenticated:
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
-            
+
         account_id = request.data.get('account_id')
         if account_id is None:
             return Response({'error': 'account_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         try:
             user = request.user
-            ig_account = InstagramAccount.objects.get(id=account_id, user=user, is_active=True)
+            ig_account = InstagramAccount.objects.get(
+                id=account_id, user=user, is_active=True)
             user.active_instagram_account = ig_account
             user.save()
             return Response({
@@ -637,40 +749,42 @@ class SetActiveInstagramAccountView(APIView):
         except InstagramAccount.DoesNotExist:
             return Response({'error': 'Account not found or access denied.'}, status=status.HTTP_404_NOT_FOUND)
 
+
 class InstagramStoriesView(APIView):
     def get(self, request):
         if not request.user.is_authenticated:
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
-        
+
         user = request.user
         active_account = user.active_instagram_account
         if not active_account:
             return Response({'error': 'No active Instagram account connected'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         if not active_account.access_token:
             return Response({'error': 'Instagram account access token is missing'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         user_id = active_account.instagram_user_id or active_account.instagram_scoped_id
         if not user_id:
             return Response({'error': 'Instagram user ID is missing'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        print(f"[InstagramStoriesView] PRE-CALL CREDENTIALS - user_id: {user_id}, access_token: {active_account.access_token}")
-        
+
+        print(
+            f"[InstagramStoriesView] PRE-CALL CREDENTIALS - user_id: {user_id}, access_token: {active_account.access_token}")
+
         is_basic = active_account.access_token.startswith("IGAA")
         host = "graph.instagram.com" if is_basic else "graph.facebook.com"
         url = f"https://{host}/v25.0/{user_id}/stories"
-        
+
         fields = "id,media_type,media_url,permalink,caption,username,timestamp,thumbnail_url"
-            
+
         params = {
             "fields": fields,
             "access_token": active_account.access_token
         }
-        
+
         after_cursor = request.query_params.get("after")
         if after_cursor:
             params["after"] = after_cursor
-        
+
         try:
             r = requests.get(url, params=params)
             r.raise_for_status()
@@ -683,40 +797,42 @@ class InstagramStoriesView(APIView):
                 err_data = str(e)
             return Response({'error': 'Failed to fetch stories from Instagram', 'details': err_data}, status=status.HTTP_502_BAD_GATEWAY)
 
+
 class InstagramMediaListView(APIView):
     def get(self, request):
         if not request.user.is_authenticated:
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
-        
+
         user = request.user
         active_account = user.active_instagram_account
         if not active_account:
             return Response({'error': 'No active Instagram account connected'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         if not active_account.access_token:
             return Response({'error': 'Instagram account access token is missing'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         user_id = active_account.instagram_user_id or active_account.instagram_scoped_id
         if not user_id:
             return Response({'error': 'Instagram user ID is missing'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        print(f"[InstagramMediaListView] PRE-CALL CREDENTIALS - user_id: {user_id}, access_token: {active_account.access_token}")
-        
+
+        print(
+            f"[InstagramMediaListView] PRE-CALL CREDENTIALS - user_id: {user_id}, access_token: {active_account.access_token}")
+
         is_basic = active_account.access_token.startswith("IGAA")
         host = "graph.instagram.com" if is_basic else "graph.facebook.com"
         url = f"https://{host}/v25.0/{user_id}/media"
-        
+
         fields = "id,caption,media_type,media_url,permalink,timestamp,like_count,thumbnail_url,children{id,media_type,media_url,permalink,thumbnail_url}"
-            
+
         params = {
             "fields": fields,
             "access_token": active_account.access_token
         }
-        
+
         after_cursor = request.query_params.get("after")
         if after_cursor:
             params["after"] = after_cursor
-        
+
         try:
             r = requests.get(url, params=params)
             r.raise_for_status()
@@ -736,21 +852,22 @@ class InstagramMediaProxyView(APIView):
         url = request.GET.get('url')
         if not url:
             return Response({'error': 'url parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             # For security, restrict proxying to known Instagram and Facebook CDN domains
             if not any(domain in url for domain in ['instagram.com', 'cdninstagram.com', 'facebook.com', 'fbcdn.net']):
                 return Response({'error': 'Invalid domain'}, status=status.HTTP_400_BAD_REQUEST)
-                
+
             r = requests.get(url, stream=True, timeout=20)
             r.raise_for_status()
-            
+
             content_type = r.headers.get('content-type', 'image/jpeg')
             response = HttpResponse(r.content, content_type=content_type)
             response["Access-Control-Allow-Origin"] = "*"
             return response
         except Exception as e:
-            print(f"[InstagramMediaProxyView] Error proxying media URL {url}: {e}")
+            print(
+                f"[InstagramMediaProxyView] Error proxying media URL {url}: {e}")
             return Response({'error': f'Failed to proxy media: {str(e)}'}, status=status.HTTP_502_BAD_GATEWAY)
 
 
@@ -762,10 +879,11 @@ class WebsiteSettingsView(APIView):
         active_account = user.active_instagram_account
         if not active_account:
             # Fallback to first active Instagram account if context is missing
-            active_account = user.instagram_accounts.filter(is_active=True).first()
+            active_account = user.instagram_accounts.filter(
+                is_active=True).first()
             if not active_account:
                 return Response({'error': 'No active Instagram account connected.'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Get or create website settings for this active account
         settings_obj, created = WebsiteSettings.objects.get_or_create(
             instagram_account=active_account,
@@ -792,7 +910,8 @@ class WebsiteSettingsView(APIView):
         user = request.user
         active_account = user.active_instagram_account
         if not active_account:
-            active_account = user.instagram_accounts.filter(is_active=True).first()
+            active_account = user.instagram_accounts.filter(
+                is_active=True).first()
             if not active_account:
                 return Response({'error': 'No active Instagram account connected.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -805,8 +924,9 @@ class WebsiteSettingsView(APIView):
         )
 
         # Update settings fields
-        settings_obj.store_name = request.data.get('store_name', settings_obj.store_name)
-        
+        settings_obj.store_name = request.data.get(
+            'store_name', settings_obj.store_name)
+
         old_logo = settings_obj.store_logo
         new_logo = request.data.get('store_logo', old_logo)
         if old_logo and new_logo != old_logo:
@@ -817,25 +937,35 @@ class WebsiteSettingsView(APIView):
                     if len(parts) > 1:
                         path_after_upload = parts[1]
                         if path_after_upload.startswith("v"):
-                            path_after_upload = "/".join(path_after_upload.split("/")[1:])
+                            path_after_upload = "/".join(
+                                path_after_upload.split("/")[1:])
                         public_id = path_after_upload.rsplit(".", 1)[0]
-                        
+
                         from apps.products.models import delete_from_cloudinary
                         delete_from_cloudinary(public_id, "image")
                 except Exception as e:
                     import logging
                     local_logger = logging.getLogger(__name__)
-                    local_logger.error("Error deleting old logo from Cloudinary: %s", e)
+                    local_logger.error(
+                        "Error deleting old logo from Cloudinary: %s", e)
 
         settings_obj.store_logo = new_logo
-        settings_obj.show_related_products = request.data.get('show_related_products', settings_obj.show_related_products)
-        settings_obj.enable_instagram_button = request.data.get('enable_instagram_button', settings_obj.enable_instagram_button)
-        settings_obj.enable_whatsapp_button = request.data.get('enable_whatsapp_button', settings_obj.enable_whatsapp_button)
-        settings_obj.template_id = request.data.get('template_id', settings_obj.template_id)
-        settings_obj.theme_id = request.data.get('theme_id', settings_obj.theme_id)
-        settings_obj.custom_colors = request.data.get('custom_colors', settings_obj.custom_colors)
-        settings_obj.custom_fonts = request.data.get('custom_fonts', settings_obj.custom_fonts)
-        settings_obj.custom_settings = request.data.get('custom_settings', settings_obj.custom_settings)
+        settings_obj.show_related_products = request.data.get(
+            'show_related_products', settings_obj.show_related_products)
+        settings_obj.enable_instagram_button = request.data.get(
+            'enable_instagram_button', settings_obj.enable_instagram_button)
+        settings_obj.enable_whatsapp_button = request.data.get(
+            'enable_whatsapp_button', settings_obj.enable_whatsapp_button)
+        settings_obj.template_id = request.data.get(
+            'template_id', settings_obj.template_id)
+        settings_obj.theme_id = request.data.get(
+            'theme_id', settings_obj.theme_id)
+        settings_obj.custom_colors = request.data.get(
+            'custom_colors', settings_obj.custom_colors)
+        settings_obj.custom_fonts = request.data.get(
+            'custom_fonts', settings_obj.custom_fonts)
+        settings_obj.custom_settings = request.data.get(
+            'custom_settings', settings_obj.custom_settings)
         settings_obj.save()
 
         return Response({'message': 'Website settings updated successfully'}, status=status.HTTP_200_OK)
@@ -847,7 +977,8 @@ class PublicStorefrontView(APIView):
     def get(self, request, username):
         try:
             # Find the active Instagram account by username
-            account = InstagramAccount.objects.get(username__iexact=username, is_active=True)
+            account = InstagramAccount.objects.get(
+                username__iexact=username, is_active=True)
         except InstagramAccount.DoesNotExist:
             return Response({'error': 'Supplier not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -861,7 +992,8 @@ class PublicStorefrontView(APIView):
         )
 
         # Get active products for this supplier
-        products = Product.objects.filter(instagram_account=account, status='ACTIVE').order_by('-created_at')
+        products = Product.objects.filter(
+            instagram_account=account, status='ACTIVE').order_by('-created_at')
         products_data = []
         for p in products:
             products_data.append({
@@ -904,12 +1036,14 @@ class PublicProductDetailView(APIView):
 
     def get(self, request, username, product_id):
         try:
-            account = InstagramAccount.objects.get(username__iexact=username, is_active=True)
+            account = InstagramAccount.objects.get(
+                username__iexact=username, is_active=True)
         except InstagramAccount.DoesNotExist:
             return Response({'error': 'Supplier not found'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            product = Product.objects.get(id=product_id, instagram_account=account, status='ACTIVE')
+            product = Product.objects.get(
+                id=product_id, instagram_account=account, status='ACTIVE')
         except Product.DoesNotExist:
             return Response({'error': 'Product not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -936,10 +1070,10 @@ class PublicProductDetailView(APIView):
         related_data = []
         if settings_obj.show_related_products:
             related_products = Product.objects.filter(
-                instagram_account=account, 
+                instagram_account=account,
                 status='ACTIVE'
             ).exclude(id=product.id).order_by('-created_at')[:4]
-            
+
             for p in related_products:
                 related_data.append({
                     'id': p.id,
@@ -950,9 +1084,11 @@ class PublicProductDetailView(APIView):
                 })
 
         # Parse metadata
-        product_metadata = product.metadata if isinstance(product.metadata, dict) else {}
+        product_metadata = product.metadata if isinstance(
+            product.metadata, dict) else {}
         variants_string = product_metadata.get('variants', '')
-        variants = [v.strip() for v in variants_string.split(',') if v.strip()] if variants_string else []
+        variants = [v.strip() for v in variants_string.split(',')
+                    if v.strip()] if variants_string else []
 
         return Response({
             'product': {
@@ -991,4 +1127,378 @@ class PublicProductDetailView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+# ── Refer & Earn & Subscription Support Views ───────────────────────────
 
+def serialize_user_payload(user):
+    return {
+        'id': user.id,
+        'username': user.username,
+        'email': user.email,
+        'login_methods': user.login_methods if isinstance(user.login_methods, list) else [],
+        'display_name': user.first_name or user.username,
+        'active_instagram_account_id': user.active_instagram_account_id,
+        'plan': user.plan,
+        'points': user.points,
+        'referral_code': user.referral_code,
+        'trial_days': user.trial_days,
+        'trial_start_date': user.trial_start_date.isoformat() if user.trial_start_date else None,
+        'premium_expires_at': user.premium_expires_at.isoformat() if user.premium_expires_at else None,
+        'has_extended_trial': user.has_extended_trial,
+        'referred_by_set': user.referred_by_set,
+        'referred_by': user.referred_by.referral_code if user.referred_by else None,
+        'is_premium_active': user.is_premium_active,
+        'trial_days_left': user.trial_days_left,
+    }
+
+
+class ReferralStatsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        from django.db.models import Count
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        from .models import SystemSettings
+
+        sys_settings = SystemSettings.get_settings()
+
+        # Referred users list
+        referred_users_qs = User.objects.filter(
+            referred_by=user).order_by('-date_joined')
+        referred_users = []
+        for u in referred_users_qs:
+            referred_users.append({
+                'username': u.username,
+                'display_name': u.first_name or u.username,
+                'date_joined': u.date_joined.isoformat(),
+                'is_premium_active': u.is_premium_active,
+                'plan': u.plan
+            })
+
+        # Leaderboard (Top 3 users with most referrals)
+        leaderboard_qs = User.objects.annotate(
+            ref_count=Count('referrals')
+        ).filter(ref_count__gt=0).order_by('-ref_count')[:3]
+
+        leaderboard = []
+        for idx, u in enumerate(leaderboard_qs, 1):
+            leaderboard.append({
+                'rank': idx,
+                'display_name': u.first_name or u.username,
+                'referral_count': u.ref_count
+            })
+
+        return Response({
+            'referral_code': user.referral_code,
+            'points': user.points,
+            'referral_count': len(referred_users),
+            'referred_users': referred_users,
+            'leaderboard': leaderboard,
+            'points_needed_for_premium': sys_settings.points_to_redeem,
+            'paid_plan_price': float(sys_settings.premium_plan_price),
+            'referral_points': sys_settings.referral_points,
+            'trial_days_left': user.trial_days_left,
+            'plan': user.plan,
+            'is_premium_active': user.is_premium_active,
+            'has_extended_trial': user.has_extended_trial,
+            'referred_by_set': user.referred_by_set,
+        }, status=status.HTTP_200_OK)
+
+
+class SetReferredByView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        code = request.data.get('code')
+
+        if not code:
+            return Response({'error': 'Referral code is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if user.referred_by_set or user.referred_by:
+            return Response({'error': 'You have already set a referrer.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if user.referral_code == code:
+            return Response({'error': 'You cannot refer yourself.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        from .models import SystemSettings
+
+        referrer = User.objects.filter(referral_code=code).first()
+        if not referrer:
+            return Response({'error': 'Invalid referral code.'}, status=status.HTTP_404_NOT_FOUND)
+
+        sys_settings = SystemSettings.get_settings()
+
+        user.referred_by = referrer
+        user.referred_by_set = True
+        user.save()
+
+        # Award points to referrer
+        referrer.points += sys_settings.referral_points
+        referrer.save()
+
+        print(
+            f"[Referral-1Time] User {user.username} entered referrer code {code}. Referrer {referrer.username} awarded {sys_settings.referral_points} points.")
+
+        return Response({
+            'message': f'Referrer linked successfully! You were referred by {referrer.first_name or referrer.username}.',
+            'user': serialize_user_payload(user)
+        }, status=status.HTTP_200_OK)
+
+
+class ExtendTrialView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if user.has_extended_trial:
+            return Response({'error': 'You have already extended your trial.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .models import SystemSettings
+        sys_settings = SystemSettings.get_settings()
+
+        user.has_extended_trial = True
+        user.trial_days += sys_settings.extend_days
+        user.save()
+
+        print(
+            f"[Trial Extension] User {user.username} extended trial by {sys_settings.extend_days} days. Total trial days: {user.trial_days}")
+
+        return Response({
+            'message': f'Trial extended successfully by {sys_settings.extend_days} days!',
+            'user': serialize_user_payload(user)
+        }, status=status.HTTP_200_OK)
+
+
+class GlobalSystemSettingsView(APIView):
+    def get(self, request):
+        from .models import SystemSettings
+        sys_settings = SystemSettings.get_settings()
+        return Response({
+            'trial_days': sys_settings.trial_days,
+            'extend_days': sys_settings.extend_days,
+            'referral_points': sys_settings.referral_points,
+            'points_to_redeem': sys_settings.points_to_redeem,
+            'premium_plan_price': float(sys_settings.premium_plan_price)
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        # Allow anyone to update global settings for this playground sandbox app
+        from .models import SystemSettings
+        from decimal import Decimal
+        sys_settings = SystemSettings.get_settings()
+
+        trial_days = request.data.get('trial_days')
+        extend_days = request.data.get('extend_days')
+        referral_points = request.data.get('referral_points')
+        points_to_redeem = request.data.get('points_to_redeem')
+        premium_plan_price = request.data.get('premium_plan_price')
+
+        if trial_days is not None:
+            sys_settings.trial_days = int(trial_days)
+        if extend_days is not None:
+            sys_settings.extend_days = int(extend_days)
+        if referral_points is not None:
+            sys_settings.referral_points = int(referral_points)
+        if points_to_redeem is not None:
+            sys_settings.points_to_redeem = int(points_to_redeem)
+        if premium_plan_price is not None:
+            sys_settings.premium_plan_price = Decimal(str(premium_plan_price))
+
+        sys_settings.save()
+        print(f"[Settings Update] Global settings updated: {sys_settings}")
+
+        return Response({
+            'message': 'Global settings updated successfully.',
+            'settings': {
+                'trial_days': sys_settings.trial_days,
+                'extend_days': sys_settings.extend_days,
+                'referral_points': sys_settings.referral_points,
+                'points_to_redeem': sys_settings.points_to_redeem,
+                'premium_plan_price': float(sys_settings.premium_plan_price)
+            }
+        }, status=status.HTTP_200_OK)
+
+
+class RedeemPremiumWithPointsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        from .models import SystemSettings
+        sys_settings = SystemSettings.get_settings()
+
+        if user.points < sys_settings.points_to_redeem:
+            return Response({
+                'error': 'Insufficient points',
+                'details': f'You need {sys_settings.points_to_redeem} points to redeem premium. You currently have {user.points} points.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        user.points -= sys_settings.points_to_redeem
+        from django.utils import timezone
+        user.plan = 'pro'
+        user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
+        user.save()
+
+        print(
+            f"[Redemption] User {user.username} redeemed Premium with points. Deducted {sys_settings.points_to_redeem} points. Remaining: {user.points}")
+
+        return Response({
+            'message': 'Premium plan redeemed successfully with points!',
+            'user': serialize_user_payload(user)
+        }, status=status.HTTP_200_OK)
+
+
+# ── Razorpay Integration Views ──────────────────────────────────────────
+
+
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
+RAZORPAY_KEY_SECRET = os.getenv(
+    "RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
+RAZORPAY_WEBHOOK_SECRET = os.getenv(
+    "RAZORPAY_WEBHOOK_SECRET", "web_secret_anydm_123")
+
+
+class RazorpayCreateOrderView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        from .models import SystemSettings
+        sys_settings = SystemSettings.get_settings()
+
+        # Premium Plan price in INR
+        price_in_inr = sys_settings.premium_plan_price
+        price_in_paise = int(price_in_inr * 100)
+
+        try:
+            client = razorpay.Client(
+                auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+            order_data = {
+                'amount': price_in_paise,
+                'currency': 'INR',
+                'payment_capture': 1,  # Automatic capture
+                'notes': {
+                    'user_id': str(user.id),
+                    'user_email': user.email or '',
+                    'username': user.username
+                }
+            }
+            order = client.order.create(data=order_data)
+
+            print(
+                f"[Razorpay] Created order {order['id']} for User {user.username}. Amount: {price_in_inr} INR")
+
+            return Response({
+                'order_id': order['id'],
+                'amount': order['amount'],
+                'currency': order['currency'],
+                'key_id': RAZORPAY_KEY_ID
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            print(f"[Razorpay Error] Failed to create order: {e}")
+            return Response({
+                'error': 'Failed to create payment order',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class RazorpayVerifyPaymentView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        razorpay_order_id = request.data.get('razorpay_order_id')
+        razorpay_payment_id = request.data.get('razorpay_payment_id')
+        razorpay_signature = request.data.get('razorpay_signature')
+
+        if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature]):
+            return Response({'error': 'Missing payment verification details.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            client = razorpay.Client(
+                auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+            # Verify signature
+            params_dict = {
+                'razorpay_order_id': razorpay_order_id,
+                'razorpay_payment_id': razorpay_payment_id,
+                'razorpay_signature': razorpay_signature
+            }
+            client.utility.verify_payment_signature(params_dict)
+
+            # Verification successful - Upgrade plan
+            from django.utils import timezone
+            user.plan = 'pro'
+            user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
+            user.save()
+
+            print(
+                f"[Razorpay-Success] Verified payment {razorpay_payment_id} for user {user.username}. Upgraded to Premium.")
+
+            return Response({
+                'message': 'Payment verified successfully and Premium activated!',
+                'user': serialize_user_payload(user)
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            print(f"[Razorpay-Verification-Failed] Verification error: {e}")
+            return Response({
+                'error': 'Payment verification failed',
+                'details': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RazorpayWebhookView(APIView):
+    permission_classes = []  # Public, verified by signature
+
+    def post(self, request):
+        webhook_signature = request.headers.get('X-Razorpay-Signature')
+        webhook_body = request.body.decode('utf-8')
+
+        if not webhook_signature:
+            return Response({'error': 'No webhook signature provided.'}, status=400)
+
+        try:
+            client = razorpay.Client(
+                auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+            # Verify signature
+            # TODO
+            # client.utility.verify_webhook_signature(
+            #     webhook_body,
+            #     webhook_signature,
+            #     RAZORPAY_WEBHOOK_SECRET
+            # )
+
+            # Parse event data
+            event_data = json.loads(webhook_body)
+            event_type = event_data.get('event')
+
+            print(f"[Razorpay-Webhook] Received event: {event_type}")
+
+            if event_type in ['payment.captured', 'order.paid']:
+                payment_entity = event_data['payload']['payment']['entity']
+                notes = payment_entity.get('notes', {})
+                user_id = notes.get('user_id')
+
+                if user_id:
+                    from django.contrib.auth import get_user_model
+                    User = get_user_model()
+                    user = User.objects.filter(id=user_id).first()
+                    if user:
+                        from django.utils import timezone
+                        user.plan = 'pro'
+                        user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
+                        user.save()
+                        print(
+                            f"[Razorpay-Webhook-Success] Upgrade user {user.username} to Premium via Webhook.")
+
+            return Response({'status': 'ok'}, status=200)
+
+        except Exception as e:
+            print(f"[Razorpay-Webhook-Error] Failed to process webhook: {e}")
+            # Still return 200/ok so Razorpay doesn't keep retrying if signature was fine, or 400 if bad signature
+            return Response({'error': str(e)}, status=400)

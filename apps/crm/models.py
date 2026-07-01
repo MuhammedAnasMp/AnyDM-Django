@@ -254,6 +254,8 @@ class AIAssistantConfig(models.Model):
     quick_replies = models.JSONField(default=list, blank=True)
     generic_templates = models.JSONField(default=list, blank=True)
     
+    last_error = models.TextField(blank=True, default="")
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

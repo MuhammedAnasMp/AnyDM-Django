@@ -15,7 +15,15 @@ from .views import (
     InstagramMediaProxyView,
     WebsiteSettingsView,
     PublicStorefrontView,
-    PublicProductDetailView
+    PublicProductDetailView,
+    ReferralStatsView,
+    SetReferredByView,
+    ExtendTrialView,
+    GlobalSystemSettingsView,
+    RedeemPremiumWithPointsView,
+    RazorpayCreateOrderView,
+    RazorpayVerifyPaymentView,
+    RazorpayWebhookView
 )
 
 urlpatterns = [
@@ -35,6 +43,14 @@ urlpatterns = [
     path('website-settings/', WebsiteSettingsView.as_view(), name='website-settings'),
     path('public/store/<str:username>/', PublicStorefrontView.as_view(), name='public-storefront'),
     path('public/store/<str:username>/product/<int:product_id>/', PublicProductDetailView.as_view(), name='public-product-detail'),
+    
+    # Referral & Billing Endpoints
+    path('referral/stats/', ReferralStatsView.as_view(), name='referral-stats'),
+    path('referral/set-referred-by/', SetReferredByView.as_view(), name='referral-set-referred-by'),
+    path('plan/extend-trial/', ExtendTrialView.as_view(), name='plan-extend-trial'),
+    path('settings/system/', GlobalSystemSettingsView.as_view(), name='settings-system'),
+    path('plan/redeem-points/', RedeemPremiumWithPointsView.as_view(), name='plan-redeem-points'),
+    path('razorpay/create-order/', RazorpayCreateOrderView.as_view(), name='razorpay-create-order'),
+    path('razorpay/verify-payment/', RazorpayVerifyPaymentView.as_view(), name='razorpay-verify-payment'),
+    path('razorpay/webhook/', RazorpayWebhookView.as_view(), name='razorpay-webhook'),
 ]
-
-

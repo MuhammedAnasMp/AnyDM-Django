@@ -367,16 +367,30 @@ def process_ai_response(interaction_id):
             logger.error(f"[AI CORE] Gemini returned status {response.status_code}: {response.text}")
             try:
                 err_data = response.json()
-                err_message = err_data.get("error", {}).get("message", "").lower()
+                raw_message = err_data.get("error", {}).get("message", "Unknown error")
+                err_message = raw_message.lower()
                 status_str = err_data.get("error", {}).get("status", "").lower()
+                
+                # Format a friendly error message for the user settings view
+                friendly_error = f"Gemini API Error: {raw_message} (Status {response.status_code})"
+                if response.status_code == 429:
+                    friendly_error = f"Gemini API Quota Exceeded (429): {raw_message}. Please check your Gemini billing tier or API rate limits."
+                elif response.status_code in [400, 403]:
+                    friendly_error = f"Gemini API Authentication Error ({response.status_code}): {raw_message}. Please verify your API Token is active and valid."
+                
+                config.last_error = friendly_error
                 
                 # Automatically disable AI mode on quota or key issue
                 if response.status_code in [400, 403, 429] or "api key" in err_message or "quota" in err_message or "resource_exhausted" in status_str:
                     logger.warning(f"[AI CORE] Quota/Key issue detected. Auto-disabling AI mode for account {account.id}")
                     config.is_ai_mode_on = False
-                    config.save(update_fields=["is_ai_mode_on"])
+                    config.save(update_fields=["is_ai_mode_on", "last_error"])
+                else:
+                    config.save(update_fields=["last_error"])
             except Exception as pe:
                 logger.error(f"[AI CORE] Error parsing Gemini error response: {pe}")
+                config.last_error = f"Gemini API Error: Status {response.status_code}"
+                config.save(update_fields=["last_error"])
             
             api_error_occurred = True
             break

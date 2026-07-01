@@ -1620,7 +1620,8 @@ class AIAssistantConfigView(APIView):
             "faqs": config.faqs,
             "products_and_services": config.products_and_services,
             "quick_replies": config.quick_replies,
-            "generic_templates": config.generic_templates
+            "generic_templates": config.generic_templates,
+            "last_error": config.last_error
         })
 
     def post(self, request):
@@ -1635,7 +1636,32 @@ class AIAssistantConfigView(APIView):
         
         data = request.data
         if "api_key" in data:
-            config.api_key = data.get("api_key")
+            api_key = data.get("api_key", "").strip()
+            if api_key:
+                if not (api_key.startswith("AIzaSy") or api_key.startswith("AQ.")):
+                    return Response({"error": "Invalid API Key format. Only Gemini API keys starting with 'AIzaSy' or 'AQ.' are supported."}, status=400)
+                
+                # Perform key validation call to Gemini
+                import requests
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={api_key}"
+                payload = {
+                    "contents": [{"parts": [{"text": "Hello"}]}]
+                }
+                try:
+                    r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=8)
+                    if r.status_code in [400, 403]:
+                        err_msg = "Invalid Gemini API Key."
+                        try:
+                            res_json = r.json()
+                            err_msg = res_json.get("error", {}).get("message", err_msg)
+                        except Exception:
+                            pass
+                        return Response({"error": f"API Key verification failed: {err_msg}"}, status=400)
+                except Exception as e:
+                    # Allow saving if there is a network timeout to prevent locking out, but log/warn
+                    pass
+            config.api_key = api_key
+
         if "is_ai_mode_on" in data:
             config.is_ai_mode_on = bool(data.get("is_ai_mode_on"))
         if "custom_instructions" in data:
@@ -1665,8 +1691,14 @@ class AIAssistantConfigView(APIView):
         if "generic_templates" in data:
             config.generic_templates = data.get("generic_templates")
 
+        # Clear error on successful setup/save
+        config.last_error = ""
         config.save()
-        return Response({"message": "AI settings saved successfully", "is_ai_mode_on": config.is_ai_mode_on})
+        return Response({
+            "message": "AI settings saved successfully", 
+            "is_ai_mode_on": config.is_ai_mode_on,
+            "last_error": config.last_error
+        })
 
 
 class AIAssistantToggleGlobalView(APIView):
