@@ -1596,16 +1596,29 @@ class BroadcastMessageView(APIView):
 class AIAssistantConfigView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
+    def _resolve_account(self, request):
+        """Resolve the target Instagram account from optional ?account_id= query param."""
         user = request.user
-        account = user.active_instagram_account
+        account_id = request.query_params.get("account_id") or request.data.get("account_id")
+        if account_id:
+            account = InstagramAccount.objects.filter(id=account_id, user=user).first()
+            if not account:
+                return None
+        else:
+            account = user.active_instagram_account
+            if not account:
+                account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+        return account
+
+    def get(self, request):
+        account = self._resolve_account(request)
         if not account:
-            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
-        if not account:
-            return Response({"error": "No active Instagram account connected"}, status=400)
+            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
 
         config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
         return Response({
+            "account_id": account.id,
+            "account_username": account.username,
             "api_key": config.api_key,
             "is_ai_mode_on": config.is_ai_mode_on,
             "custom_instructions": config.custom_instructions,
@@ -1625,12 +1638,9 @@ class AIAssistantConfigView(APIView):
         })
 
     def post(self, request):
-        user = request.user
-        account = user.active_instagram_account
+        account = self._resolve_account(request)
         if not account:
-            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
-        if not account:
-            return Response({"error": "No active Instagram account connected"}, status=400)
+            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
 
         config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
         
@@ -1695,7 +1705,9 @@ class AIAssistantConfigView(APIView):
         config.last_error = ""
         config.save()
         return Response({
-            "message": "AI settings saved successfully", 
+            "message": "AI settings saved successfully",
+            "account_id": account.id,
+            "account_username": account.username,
             "is_ai_mode_on": config.is_ai_mode_on,
             "last_error": config.last_error
         })
@@ -1706,9 +1718,13 @@ class AIAssistantToggleGlobalView(APIView):
 
     def post(self, request):
         user = request.user
-        account = user.active_instagram_account
-        if not account:
-            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+        account_id = request.data.get("account_id")
+        if account_id:
+            account = InstagramAccount.objects.filter(id=account_id, user=user).first()
+        else:
+            account = user.active_instagram_account
+            if not account:
+                account = InstagramAccount.objects.filter(user=user, is_active=True).first()
         if not account:
             return Response({"error": "No active Instagram account connected"}, status=400)
 
