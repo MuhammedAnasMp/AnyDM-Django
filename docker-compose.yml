@@ -1,0 +1,73 @@
+services:
+  web:
+    build: .
+    command: gunicorn core.wsgi:application --bind 0.0.0.0:8005
+    volumes:
+      - .:/app
+    ports:
+      - "8005:8005"
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+
+  celery:
+    build: .
+    command: celery -A core worker --loglevel=info
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+
+  celery-beat:
+    build: .
+    command: celery -A core beat --loglevel=info
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  db:
+    image: mysql:8
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: anydm_db
+      MYSQL_ROOT_PASSWORD: rootpassword
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  nginx:
+    image: nginx:latest
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - web
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - /home/anas/.cloudflared:/etc/cloudflared:ro
+    depends_on:
+      - web
+
+volumes:
+  mysql_data:
