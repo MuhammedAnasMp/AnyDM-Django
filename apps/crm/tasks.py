@@ -72,4 +72,13 @@ def process_ai_response_task(interaction_id):
     try:
         process_ai_response(interaction_id)
     except Exception as e:
-        logger.error(f"Error in process_ai_response_task for interaction {interaction_id}: {e}", exc_info=True)
+        logger.error(f"Error in process_ai_response_task for interaction {interaction_id}: {e}", exc_info=True)
+
+
+import time
+@shared_task
+def fake_redis_task():
+    print("Django working: task received from cron/job trigger")
+    time.sleep(2)
+    print("Task executed successfully")
+    return "done"

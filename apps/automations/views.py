@@ -5,7 +5,8 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404
 from apps.accounts.models import InstagramAccount
 from apps.automations.models import AutomationRule, AutomationAction, GiveawayConfig, GiveawayReward, AutomationExecution
-
+from apps.crm.tasks import fake_redis_task
+from django.http import JsonResponse
 class AutomationListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -350,3 +351,13 @@ class AutomationToggleView(APIView):
             "id": rule.id,
             "status": "active" if rule.status == "active" else "disabled"
         })
+
+
+
+def cron_trigger(request):
+    fake_redis_task.delay()
+
+    return JsonResponse({
+        "status": "Django working",
+        "message": "Task sent to Celery via Redis queue"
+    })
