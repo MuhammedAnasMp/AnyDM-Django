@@ -24,7 +24,7 @@ class Customer(models.Model):
     username = models.CharField(max_length=255, blank=True, null=True)
     full_name = models.CharField(max_length=255, blank=True, null=True)
 
-    profile_pic = models.URLField(blank=True, null=True)
+    profile_pic = models.URLField(max_length=1000, blank=True, null=True)
 
     first_seen_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
