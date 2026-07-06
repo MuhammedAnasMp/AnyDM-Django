@@ -63,7 +63,7 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --config /etc/cloudflared/config.yml run
+    command: tunnel --protocol http2 --config /etc/cloudflared/config.yml run
     volumes:
       - /home/anas/.cloudflared:/etc/cloudflared:ro
     depends_on:
