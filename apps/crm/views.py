@@ -302,6 +302,13 @@ class InstagramWebhookView(View):
         try:
             from apps.settings.redis_client import get_setting_value
             forward_url = get_setting_value("FORWARD_WEBHOOK_URL")
+            if forward_url:
+                from urllib.parse import urlparse
+                parsed_forward = urlparse(forward_url)
+                incoming_host = request.get_host()
+                if parsed_forward.netloc == incoming_host:
+                    logger.warning(f"Bypassed GET forwarding to prevent infinite loop on host: {incoming_host}")
+                    forward_url = None
         except Exception as e:
             logger.warning(f"Error fetching FORWARD_WEBHOOK_URL setting: {e}")
             forward_url = None
@@ -335,6 +342,13 @@ class InstagramWebhookView(View):
         try:
             from apps.settings.redis_client import get_setting_value
             forward_url = get_setting_value("FORWARD_WEBHOOK_URL")
+            if forward_url:
+                from urllib.parse import urlparse
+                parsed_forward = urlparse(forward_url)
+                incoming_host = request.get_host()
+                if parsed_forward.netloc == incoming_host:
+                    logger.warning(f"Bypassed POST forwarding to prevent infinite loop on host: {incoming_host}")
+                    forward_url = None
         except Exception as e:
             logger.warning(f"Error fetching FORWARD_WEBHOOK_URL setting: {e}")
             forward_url = None
