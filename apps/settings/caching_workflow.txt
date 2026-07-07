@@ -1,0 +1,23 @@
+REDIS CACHING SETTINGS WORKFLOW
+
+1. CREATE / UPDATE SETTING:
+   - User creates or updates a setting via DB or Django Admin.
+   - Django signal 'post_save' triggers.
+   - Model instance details (value, enabled) are serialized as JSON.
+   - Data is stored in Redis under key "caching_dev_setting:{key}".
+
+2. TOGGLE / DISABLE SETTING:
+   - User toggles 'enabled' field to False in Django Admin.
+   - 'post_save' signal triggers.
+   - JSON in Redis updates to '{"value": "...", "enabled": false}'.
+   - Subsequent reads return None (effectively disabling the setting at runtime).
+
+3. DELETE SETTING:
+   - User deletes the setting from the DB.
+   - Django signal 'post_delete' triggers.
+   - Key "caching_dev_setting:{key}" is removed from Redis.
+
+4. RUNTIME RETRIEVAL:
+   - Application calls 'get_setting_value(key)'.
+   - Checks Redis *only*. Returns the value if 'enabled' is True.
+   - No DB fallback occurs.

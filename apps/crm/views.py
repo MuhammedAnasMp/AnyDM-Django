@@ -299,6 +299,23 @@ class InstagramWebhookView(View):
         return True
 
     def get(self, request, *args, **kwargs):
+        try:
+            from apps.settings.redis_client import get_setting_value
+            forward_url = get_setting_value("FORWARD_WEBHOOK_URL")
+        except Exception as e:
+            logger.warning(f"Error fetching FORWARD_WEBHOOK_URL setting: {e}")
+            forward_url = None
+
+        if forward_url:
+            try:
+                import requests
+                logger.info(f"Forwarding Instagram GET verification to {forward_url}")
+                r = requests.get(forward_url, params=request.GET, timeout=15)
+                return HttpResponse(r.content, status=r.status_code, content_type=r.headers.get('Content-Type'))
+            except Exception as e:
+                logger.error(f"Failed to forward Instagram GET verification to {forward_url}: {e}")
+                return HttpResponse("Failed to forward verification", status=502)
+
         mode = request.GET.get("hub.mode")
         token = request.GET.get("hub.verify_token")
         challenge = request.GET.get("hub.challenge")
@@ -315,6 +332,29 @@ class InstagramWebhookView(View):
         return HttpResponse("Verification failed", status=403)
 
     def post(self, request, *args, **kwargs):
+        try:
+            from apps.settings.redis_client import get_setting_value
+            forward_url = get_setting_value("FORWARD_WEBHOOK_URL")
+        except Exception as e:
+            logger.warning(f"Error fetching FORWARD_WEBHOOK_URL setting: {e}")
+            forward_url = None
+
+        if forward_url:
+            try:
+                import requests
+                headers = {}
+                for h in ["X-Hub-Signature-256", "Content-Type", "x-hub-signature-256", "content-type"]:
+                    val = request.headers.get(h)
+                    if val:
+                        headers[h] = val
+                
+                logger.info(f"Forwarding Instagram webhook payload to {forward_url}")
+                requests.post(forward_url, data=request.body, headers=headers, timeout=15)
+            except Exception as e:
+                logger.error(f"Failed to forward Instagram webhook payload to {forward_url}: {e}")
+            
+            return HttpResponse("EVENT_RECEIVED", status=200)
+
         # Abort if rate limit exceeded
         if not self.check_rate_limit(request):
             logger.warning(f"Rate limit exceeded on Webhook from IP: {request.META.get('REMOTE_ADDR')}")

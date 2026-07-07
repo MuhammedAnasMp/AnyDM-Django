@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     'apps.products',
     'apps.crm',
     'apps.automations',
+    'apps.settings',
 ]
 
 MIDDLEWARE = [
