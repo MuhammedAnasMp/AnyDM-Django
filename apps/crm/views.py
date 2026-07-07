@@ -348,10 +348,21 @@ class InstagramWebhookView(View):
                     if val:
                         headers[h] = val
                 
-                logger.info(f"Forwarding Instagram webhook payload to {forward_url}")
-                requests.post(forward_url, data=request.body, headers=headers, timeout=15)
+                # Forward payload asynchronously in a background thread to prevent Daphne blocking and timeouts
+                import threading
+                def execute_forward(url, body, hdrs):
+                    try:
+                        requests.post(url, data=body, headers=hdrs, timeout=15)
+                    except Exception as err:
+                        logger.error(f"Async forward to {url} failed: {err}")
+
+                threading.Thread(
+                    target=execute_forward,
+                    args=(forward_url, request.body, headers),
+                    daemon=True
+                ).start()
             except Exception as e:
-                logger.error(f"Failed to forward Instagram webhook payload to {forward_url}: {e}")
+                logger.error(f"Failed to initiate async Instagram webhook forward: {e}")
             
             return HttpResponse("EVENT_RECEIVED", status=200)
 
