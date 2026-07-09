@@ -230,7 +230,7 @@ def execute_tool(func_name, func_args, customer, config):
             
             if success:
                 # Log outbound interaction in database
-                CustomerInteraction.objects.create(
+                interaction = CustomerInteraction.objects.create(
                     customer=customer,
                     seller_account=customer.owner,
                     event_type="DM",
@@ -242,6 +242,8 @@ def execute_tool(func_name, func_args, customer, config):
                     platform_timestamp=timezone.now(),
                     metadata={"sent_payload": send_res, "quick_reply_options": options}
                 )
+                from .utils import broadcast_interaction
+                broadcast_interaction(interaction)
                 return "Quick reply message sent successfully."
             else:
                 return f"Failed to send quick reply message: {send_res}"
@@ -453,7 +455,7 @@ def process_ai_response(interaction_id):
 
     if success:
         # Create outbound CustomerInteraction record in database
-        CustomerInteraction.objects.create(
+        interaction = CustomerInteraction.objects.create(
             customer=customer,
             seller_account=account,
             event_type="DM",
@@ -465,6 +467,8 @@ def process_ai_response(interaction_id):
             platform_timestamp=timezone.now(),
             metadata={"sent_payload": send_res}
         )
+        from .utils import broadcast_interaction
+        broadcast_interaction(interaction)
         logger.info(f"[AI CORE] AI response sent and logged successfully for customer {customer.id}")
         return True
     else:

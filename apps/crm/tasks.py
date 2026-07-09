@@ -21,6 +21,10 @@ def process_enquiry_background_task(interaction_id):
         enquiry = process_interaction_all(interaction)
         if enquiry:
             logger.info(f"Asynchronous processing succeeded for Enquiry ID: {enquiry.id}")
+            
+        # Broadcast the new/updated interaction to the channel group
+        from .utils import broadcast_interaction
+        broadcast_interaction(interaction)
     except CustomerInteraction.DoesNotExist:
         logger.error(f"CustomerInteraction with ID {interaction_id} not found.")
     except Exception as e:

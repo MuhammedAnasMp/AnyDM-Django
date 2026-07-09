@@ -559,12 +559,16 @@ class InstagramWebhookView(View):
                                     )
                                     try:
                                         process_interaction_all(interaction)
+                                        from .utils import broadcast_interaction
+                                        broadcast_interaction(interaction)
                                     except Exception as sync_err:
                                         logger.error(f"Synchronous fallback failed for interaction {interaction.id}: {sync_err}", exc_info=True)
                             else:
                                 logger.warning(f"Celery task is offline. Executing synchronous matching fallback.")
                                 try:
                                     process_interaction_all(interaction)
+                                    from .utils import broadcast_interaction
+                                    broadcast_interaction(interaction)
                                 except Exception as sync_err:
                                     logger.error(f"Synchronous execution failed for interaction {interaction.id}: {sync_err}", exc_info=True)
 
@@ -792,12 +796,16 @@ class InstagramWebhookView(View):
                                     )
                                     try:
                                         process_interaction_all(interaction)
+                                        from .utils import broadcast_interaction
+                                        broadcast_interaction(interaction)
                                     except Exception as sync_err:
                                         logger.error(f"Synchronous fallback failed for Comment: {sync_err}", exc_info=True)
                             else:
                                 logger.warning(f"Celery task is offline. Processing Comment synchronously.")
                                 try:
                                     process_interaction_all(interaction)
+                                    from .utils import broadcast_interaction
+                                    broadcast_interaction(interaction)
                                 except Exception as sync_err:
                                     logger.error(f"Synchronous execution failed for Comment: {sync_err}", exc_info=True)
 
@@ -1339,7 +1347,7 @@ class SendInstagramMessageView(APIView):
                                 if elems:
                                     text_content = elems[0].get("title", "")
                     
-                    CustomerInteraction.objects.create(
+                    interaction = CustomerInteraction.objects.create(
                         customer=customer,
                         seller_account=active_account,
                         event_type="DM",
@@ -1350,6 +1358,8 @@ class SendInstagramMessageView(APIView):
                         platform_timestamp=timezone.now(),
                         metadata={"sent_payload": payload}
                     )
+                    from .utils import broadcast_interaction
+                    broadcast_interaction(interaction)
             except Exception as db_err:
                 logger.error(f"Error logging outbound interaction: {db_err}")
 
@@ -1620,7 +1630,7 @@ class BroadcastMessageView(APIView):
                                 text_content = elems[0].get("title", "")
 
                 # Log interaction
-                CustomerInteraction.objects.create(
+                interaction = CustomerInteraction.objects.create(
                     customer=customer,
                     seller_account=active_account,
                     event_type="DM",
@@ -1632,6 +1642,8 @@ class BroadcastMessageView(APIView):
                     platform_timestamp=timezone.now(),
                     metadata={"sent_payload": payload, "broadcast": True}
                 )
+                from .utils import broadcast_interaction
+                broadcast_interaction(interaction)
 
                 results.append({
                     "recipient_id": recipient_id,

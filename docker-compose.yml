@@ -1,13 +1,16 @@
 services:
   web:
     build: .
-    command: gunicorn core.wsgi:application --bind 0.0.0.0:8005
+    command: daphne -b 0.0.0.0 -p 8005 core.asgi:application
     volumes:
       - .:/app
     ports:
       - "8005:8005"
     env_file:
       - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
       - redis
@@ -19,6 +22,9 @@ services:
       - .:/app
     env_file:
       - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
       - redis
@@ -30,6 +36,9 @@ services:
       - .:/app
     env_file:
       - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
       - redis

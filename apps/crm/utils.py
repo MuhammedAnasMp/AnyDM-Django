@@ -116,3 +116,92 @@ def sync_customer_profile(customer, force=False):
         logger.error(f"Failed syncing customer {customer.id}: {e}", exc_info=True)
 
     return customer
+
+
+def send_to_group(group_name, event):
+    """
+    Sends an event to a Django Channels group using get_channel_layer and async_to_sync.
+    Useful for publishing messages from Celery workers or views without opening WS connections.
+    """
+    from channels.layers import get_channel_layer
+    from asgiref.sync import async_to_sync
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    channel_layer = get_channel_layer()
+    if channel_layer:
+        try:
+            async_to_sync(channel_layer.group_send)(group_name, event)
+            logger.info(f"Successfully sent event to group {group_name}: {event}")
+        except Exception as e:
+            logger.error(f"Error sending event to group {group_name}: {e}")
+    else:
+        logger.warning(f"No channel layer configured. Event not sent to group {group_name}.")
+
+
+def serialize_interaction_to_message(interaction):
+    """
+    Serializes a CustomerInteraction object into a dictionary format compatible with the frontend.
+    """
+    is_inbound = interaction.direction == "INBOUND"
+    
+    if is_inbound:
+        from_user = {
+            "id": interaction.customer.instagram_scoped_id,
+            "username": interaction.customer.username or "Instagram User"
+        }
+        to_user = {
+            "id": interaction.seller_account.instagram_scoped_id or interaction.seller_account.instagram_user_id,
+            "username": interaction.seller_account.username
+        }
+    else:
+        from_user = {
+            "id": interaction.seller_account.instagram_scoped_id or interaction.seller_account.instagram_user_id,
+            "username": interaction.seller_account.username
+        }
+        to_user = {
+            "id": interaction.customer.instagram_scoped_id,
+            "username": interaction.customer.username or "Instagram User"
+        }
+        
+    attachments = None
+    if interaction.metadata and isinstance(interaction.metadata, dict):
+        attachments = interaction.metadata.get("attachments")
+        
+    return {
+        "id": interaction.instagram_event_id or f"temp_{interaction.id}",
+        "from": from_user,
+        "to": to_user,
+        "message": interaction.message_text or "",
+        "created_time": (interaction.platform_timestamp or interaction.created_at).isoformat(),
+        "attachments": attachments,
+        "message_source": interaction.message_source
+    }
+
+
+def broadcast_interaction(interaction):
+    """
+    Helper to broadcast a CustomerInteraction message to the owner user's channel group.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        if not interaction.seller_account or not interaction.seller_account.user:
+            logger.warning(f"Unable to broadcast interaction {interaction.id}. Missing seller account or owner user.")
+            return
+        
+        user_id = interaction.seller_account.user.id
+        group_name = f"user_{user_id}"
+        
+        serialized_msg = serialize_interaction_to_message(interaction)
+        event = {
+            "type": "chat.message",
+            "payload": {
+                "event_type": "new_message",
+                "recipient_id": interaction.customer.instagram_scoped_id,
+                "message": serialized_msg
+            }
+        }
+        send_to_group(group_name, event)
+    except Exception as e:
+        logger.error(f"Failed to broadcast interaction {interaction.id}: {e}", exc_info=True)
