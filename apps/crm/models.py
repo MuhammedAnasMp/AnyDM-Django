@@ -236,6 +236,7 @@ class AIAssistantConfig(models.Model):
     )
     api_key = models.TextField(blank=True, default="")
     is_ai_mode_on = models.BooleanField(default=False)
+    use_business_token = models.BooleanField(default=False)
     custom_instructions = models.TextField(blank=True, default="")
     response_style = models.CharField(max_length=50, default="Friendly")
     max_reply_length = models.PositiveIntegerField(default=150)

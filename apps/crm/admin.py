@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Customer, CustomerInteraction, Enquiry, EnquiryProduct
+from .models import Customer, CustomerInteraction, Enquiry, EnquiryProduct ,AIAssistantConfig
 
 class CustomerInteractionInline(admin.TabularInline):
     model = CustomerInteraction
@@ -23,3 +23,7 @@ admin.site.register(Customer, CustomerAdmin)
 admin.site.register(CustomerInteraction)
 admin.site.register(Enquiry, EnquiryAdmin)
 admin.site.register(EnquiryProduct)
+
+
+
+admin.site.register(AIAssistantConfig)

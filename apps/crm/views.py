@@ -1693,11 +1693,15 @@ class AIAssistantConfigView(APIView):
             return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
 
         config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
+        from apps.settings.models import SystemSettings
+        sys_settings = SystemSettings.get_settings()
         return Response({
             "account_id": account.id,
             "account_username": account.username,
             "api_key": config.api_key,
             "is_ai_mode_on": config.is_ai_mode_on,
+            "use_business_token": config.use_business_token,
+            "enable_subscription_ai": sys_settings.enable_subscription_ai,
             "custom_instructions": config.custom_instructions,
             "response_style": config.response_style,
             "max_reply_length": config.max_reply_length,
@@ -1722,6 +1726,12 @@ class AIAssistantConfigView(APIView):
         config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
         
         data = request.data
+        if "use_business_token" in data:
+            use_business_token = bool(data.get("use_business_token"))
+            if use_business_token and not request.user.is_premium_active:
+                return Response({"error": "Business token option is only available for paid/premium users."}, status=400)
+            config.use_business_token = use_business_token
+
         if "api_key" in data:
             api_key = data.get("api_key", "").strip()
             if api_key:
@@ -1786,6 +1796,7 @@ class AIAssistantConfigView(APIView):
             "account_id": account.id,
             "account_username": account.username,
             "is_ai_mode_on": config.is_ai_mode_on,
+            "use_business_token": config.use_business_token,
             "last_error": config.last_error
         })
 

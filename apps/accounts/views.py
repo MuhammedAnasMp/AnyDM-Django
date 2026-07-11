@@ -90,7 +90,7 @@ class FirebaseLoginView(APIView):
                 ref_code = request.data.get('referral_code')
                 if ref_code:
                     try:
-                        from .models import SystemSettings
+                        from apps.settings.models import SystemSettings
                         referrer = User.objects.filter(
                             referral_code=ref_code).first()
                         if referrer and referrer != user:
@@ -420,7 +420,7 @@ class InstagramLoginView(APIView):
                         ref_code = request.data.get('referral_code')
                         if ref_code:
                             try:
-                                from .models import SystemSettings
+                                from apps.settings.models import SystemSettings
                                 referrer = User.objects.filter(
                                     referral_code=ref_code).first()
                                 if referrer and referrer != user:
@@ -1159,7 +1159,7 @@ class ReferralStatsView(APIView):
         from django.db.models import Count
         from django.contrib.auth import get_user_model
         User = get_user_model()
-        from .models import SystemSettings
+        from apps.settings.models import SystemSettings
 
         sys_settings = SystemSettings.get_settings()
 
@@ -1224,7 +1224,7 @@ class SetReferredByView(APIView):
 
         from django.contrib.auth import get_user_model
         User = get_user_model()
-        from .models import SystemSettings
+        from apps.settings.models import SystemSettings
 
         referrer = User.objects.filter(referral_code=code).first()
         if not referrer:
@@ -1257,7 +1257,7 @@ class ExtendTrialView(APIView):
         if user.has_extended_trial:
             return Response({'error': 'You have already extended your trial.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        from .models import SystemSettings
+        from apps.settings.models import SystemSettings
         sys_settings = SystemSettings.get_settings()
 
         user.has_extended_trial = True
@@ -1275,19 +1275,22 @@ class ExtendTrialView(APIView):
 
 class GlobalSystemSettingsView(APIView):
     def get(self, request):
-        from .models import SystemSettings
+        from apps.settings.models import SystemSettings
         sys_settings = SystemSettings.get_settings()
         return Response({
             'trial_days': sys_settings.trial_days,
             'extend_days': sys_settings.extend_days,
             'referral_points': sys_settings.referral_points,
             'points_to_redeem': sys_settings.points_to_redeem,
-            'premium_plan_price': float(sys_settings.premium_plan_price)
+            'premium_plan_price': float(sys_settings.premium_plan_price),
+            'enable_ai': sys_settings.enable_ai,
+            'enable_subscription_ai': sys_settings.enable_subscription_ai,
+            'business_gemini_api_key': sys_settings.business_gemini_api_key,
         }, status=status.HTTP_200_OK)
 
     def post(self, request):
         # Allow anyone to update global settings for this playground sandbox app
-        from .models import SystemSettings
+        from apps.settings.models import SystemSettings
         from decimal import Decimal
         sys_settings = SystemSettings.get_settings()
 
@@ -1296,6 +1299,9 @@ class GlobalSystemSettingsView(APIView):
         referral_points = request.data.get('referral_points')
         points_to_redeem = request.data.get('points_to_redeem')
         premium_plan_price = request.data.get('premium_plan_price')
+        enable_ai = request.data.get('enable_ai')
+        enable_subscription_ai = request.data.get('enable_subscription_ai')
+        business_gemini_api_key = request.data.get('business_gemini_api_key')
 
         if trial_days is not None:
             sys_settings.trial_days = int(trial_days)
@@ -1307,6 +1313,12 @@ class GlobalSystemSettingsView(APIView):
             sys_settings.points_to_redeem = int(points_to_redeem)
         if premium_plan_price is not None:
             sys_settings.premium_plan_price = Decimal(str(premium_plan_price))
+        if enable_ai is not None:
+            sys_settings.enable_ai = bool(enable_ai)
+        if enable_subscription_ai is not None:
+            sys_settings.enable_subscription_ai = bool(enable_subscription_ai)
+        if business_gemini_api_key is not None:
+            sys_settings.business_gemini_api_key = str(business_gemini_api_key)
 
         sys_settings.save()
         print(f"[Settings Update] Global settings updated: {sys_settings}")
@@ -1318,9 +1330,26 @@ class GlobalSystemSettingsView(APIView):
                 'extend_days': sys_settings.extend_days,
                 'referral_points': sys_settings.referral_points,
                 'points_to_redeem': sys_settings.points_to_redeem,
-                'premium_plan_price': float(sys_settings.premium_plan_price)
+                'premium_plan_price': float(sys_settings.premium_plan_price),
+                'enable_ai': sys_settings.enable_ai,
+                'enable_subscription_ai': sys_settings.enable_subscription_ai,
+                'business_gemini_api_key': sys_settings.business_gemini_api_key,
             }
         }, status=status.HTTP_200_OK)
+
+
+
+def auto_enable_subscription_ai_for_user(user):
+    try:
+        from apps.crm.models import AIAssistantConfig
+        from apps.accounts.models import InstagramAccount
+        for account in InstagramAccount.objects.filter(user=user):
+            config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
+            config.use_business_token = True
+            config.save()
+            print(f"[AI AUTO-SWITCH] Set use_business_token=True for {account.username}")
+    except Exception as e:
+        print(f"[AI AUTO-SWITCH-ERROR] Failed to auto-enable subscription AI: {e}")
 
 
 class RedeemPremiumWithPointsView(APIView):
@@ -1328,7 +1357,7 @@ class RedeemPremiumWithPointsView(APIView):
 
     def post(self, request):
         user = request.user
-        from .models import SystemSettings
+        from apps.settings.models import SystemSettings
         sys_settings = SystemSettings.get_settings()
 
         if user.points < sys_settings.points_to_redeem:
@@ -1342,6 +1371,7 @@ class RedeemPremiumWithPointsView(APIView):
         user.plan = 'pro'
         user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
         user.save()
+        auto_enable_subscription_ai_for_user(user)
 
         print(
             f"[Redemption] User {user.username} redeemed Premium with points. Deducted {sys_settings.points_to_redeem} points. Remaining: {user.points}")
@@ -1367,7 +1397,7 @@ class RazorpayCreateOrderView(APIView):
 
     def post(self, request):
         user = request.user
-        from .models import SystemSettings
+        from apps.settings.models import SystemSettings
         sys_settings = SystemSettings.get_settings()
 
         # Premium Plan price in INR
@@ -1435,6 +1465,7 @@ class RazorpayVerifyPaymentView(APIView):
             user.plan = 'pro'
             user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
             user.save()
+            auto_enable_subscription_ai_for_user(user)
 
             print(
                 f"[Razorpay-Success] Verified payment {razorpay_payment_id} for user {user.username}. Upgraded to Premium.")
@@ -1493,6 +1524,7 @@ class RazorpayWebhookView(APIView):
                         user.plan = 'pro'
                         user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
                         user.save()
+                        auto_enable_subscription_ai_for_user(user)
                         print(
                             f"[Razorpay-Webhook-Success] Upgrade user {user.username} to Premium via Webhook.")
 

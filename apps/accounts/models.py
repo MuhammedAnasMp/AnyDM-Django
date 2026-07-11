@@ -55,6 +55,7 @@ class User(AbstractUser):
         if not self.id and not self.trial_start_date:
             self.trial_start_date = timezone.now()
             try:
+                from apps.settings.models import SystemSettings
                 sys_settings = SystemSettings.get_settings()
                 self.trial_days = sys_settings.trial_days
             except Exception:
@@ -164,21 +165,5 @@ class WebsiteSettings(models.Model):
         return f"WebsiteSettings for {self.instagram_account.username}"
 
 
-class SystemSettings(models.Model):
-    trial_days = models.IntegerField(default=14)
-    extend_days = models.IntegerField(default=7)
-    referral_points = models.IntegerField(default=50)
-    points_to_redeem = models.IntegerField(default=100)
-    premium_plan_price = models.DecimalField(max_digits=10, decimal_places=2, default=499.00)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    @classmethod
-    def get_settings(cls):
-        settings, created = cls.objects.get_or_create(id=1)
-        return settings
-
-    def __str__(self):
-        return f"SystemSettings (Price: {self.premium_plan_price}, Referral Points: {self.referral_points})"
+# SystemSettings has been moved to apps.settings.models
 
