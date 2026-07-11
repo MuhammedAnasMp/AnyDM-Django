@@ -148,28 +148,13 @@ class FirebaseLoginView(APIView):
 
             # Generate JWT tokens
             tokens = get_tokens_for_user(user)
+            user_payload = serialize_user_payload(user)
+            user_payload['login_methods'] = merged_methods
 
             return Response({
                 'message': 'Login successful',
                 'tokens': tokens,
-                'user': {
-                    'id': user.id,
-                    'email': user.email,
-                    'login_methods': merged_methods,
-                    'display_name': user.first_name or user.username,
-                    'active_instagram_account_id': user.active_instagram_account_id,
-                    'plan': user.plan,
-                    'points': user.points,
-                    'referral_code': user.referral_code,
-                    'trial_days': user.trial_days,
-                    'trial_start_date': user.trial_start_date.isoformat() if user.trial_start_date else None,
-                    'premium_expires_at': user.premium_expires_at.isoformat() if user.premium_expires_at else None,
-                    'has_extended_trial': user.has_extended_trial,
-                    'referred_by_set': user.referred_by_set,
-                    'referred_by': user.referred_by.referral_code if user.referred_by else None,
-                    'is_premium_active': user.is_premium_active,
-                    'trial_days_left': user.trial_days_left,
-                },
+                'user': user_payload,
                 'instagram_accounts': [
                     {
                         'id': acc.id,
@@ -494,29 +479,15 @@ class InstagramLoginView(APIView):
             from .firebase_auth import create_custom_token
             firebase_token = create_custom_token(user.firebase_uid)
 
+            user_payload = serialize_user_payload(user)
+            user_payload['display_name'] = ig_account.full_name or ig_account.username
+            user_payload['handle'] = ig_account.username
+
             return Response({
                 'message': 'Instagram action successful',
                 'tokens': tokens,
                 'firebase_token': firebase_token,
-                'user': {
-                    'id': user.id,
-                    'username': user.username,
-                    'display_name': ig_account.full_name or ig_account.username,
-                    'handle': ig_account.username,
-                    'active_instagram_account_id': user.active_instagram_account_id,
-                    'login_methods': user.login_methods,
-                    'plan': user.plan,
-                    'points': user.points,
-                    'referral_code': user.referral_code,
-                    'trial_days': user.trial_days,
-                    'trial_start_date': user.trial_start_date.isoformat() if user.trial_start_date else None,
-                    'premium_expires_at': user.premium_expires_at.isoformat() if user.premium_expires_at else None,
-                    'has_extended_trial': user.has_extended_trial,
-                    'referred_by_set': user.referred_by_set,
-                    'referred_by': user.referred_by.referral_code if user.referred_by else None,
-                    'is_premium_active': user.is_premium_active,
-                    'trial_days_left': user.trial_days_left,
-                },
+                'user': user_payload,
                 'instagram_account': {
                     'id': ig_account.id,
                     'username': ig_account.username,
@@ -1090,6 +1061,12 @@ class PublicProductDetailView(APIView):
         variants = [v.strip() for v in variants_string.split(',')
                     if v.strip()] if variants_string else []
 
+        # Parse metadata - exclude 'variants' since it's already in its own field
+        technical_details = {
+            k: v for k, v in product_metadata.items()
+            if k != 'variants' and v is not None and str(v).strip() != ''
+        }
+
         return Response({
             'product': {
                 'id': product.id,
@@ -1105,6 +1082,7 @@ class PublicProductDetailView(APIView):
                 'gallery': gallery_data,
                 'variants': variants,
                 'category': product.category.name if product.category else None,
+                'metadata': technical_details,
             },
             'supplier': {
                 'username': account.username,
@@ -1130,7 +1108,7 @@ class PublicProductDetailView(APIView):
 # ── Refer & Earn & Subscription Support Views ───────────────────────────
 
 def serialize_user_payload(user):
-    return {
+    payload = {
         'id': user.id,
         'username': user.username,
         'email': user.email,
@@ -1149,6 +1127,11 @@ def serialize_user_payload(user):
         'is_premium_active': user.is_premium_active,
         'trial_days_left': user.trial_days_left,
     }
+    if user.is_superuser:
+        payload['is_superuser'] = True
+    if user.is_staff:
+        payload['is_staff'] = True
+    return payload
 
 
 class ReferralStatsView(APIView):
