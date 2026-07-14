@@ -262,3 +262,94 @@ class AIAssistantConfig(models.Model):
 
     def __str__(self):
         return f"AI Config for {self.instagram_account.username}"
+
+
+class Order(models.Model):
+    ORDER_STATUS_CHOICES = [
+        ('PENDING_PAYMENT', 'Pending Payment'),
+        ('PAYMENT_RECEIVED', 'Payment Received'),
+        ('CONFIRMED', 'Order Confirmed'),
+        ('PROCESSING', 'Processing'),
+        ('PACKED', 'Packed'),
+        ('SHIPPED', 'Shipped'),
+        ('OUT_FOR_DELIVERY', 'Out For Delivery'),
+        ('DELIVERED', 'Delivered'),
+        ('COMPLETED', 'Completed'),
+        ('CANCELLED', 'Cancelled'),
+        ('PAYMENT_FAILED', 'Payment Failed'),
+        ('REFUND_REQUESTED', 'Refund Requested'),
+        ('REFUNDED', 'Refunded'),
+        ('RETURN_REQUESTED', 'Return Requested'),
+        ('RETURN_APPROVED', 'Return Approved'),
+        ('RETURN_REJECTED', 'Return Rejected'),
+    ]
+
+    order_id = models.CharField(max_length=100, unique=True)
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='orders')
+    instagram_account = models.ForeignKey('accounts.InstagramAccount', on_delete=models.CASCADE, related_name='orders')
+    
+    # Customer Details
+    customer_name = models.CharField(max_length=255)
+    customer_email = models.EmailField()
+    customer_phone = models.CharField(max_length=50)
+    shipping_address = models.TextField()
+    shipping_pincode = models.CharField(max_length=20, blank=True, null=True)
+    shipping_place = models.CharField(max_length=255, blank=True, null=True)
+    shipping_district = models.CharField(max_length=255, blank=True, null=True)
+    shipping_state = models.CharField(max_length=255, blank=True, null=True)
+
+    # Payment info
+    payment_method = models.CharField(max_length=50, default='COD')  # COD or RAZORPAY
+    payment_status = models.CharField(max_length=50, default='PENDING')  # PENDING, PAID, FAILED
+    razorpay_order_id = models.CharField(max_length=255, blank=True, null=True)
+    razorpay_payment_id = models.CharField(max_length=255, blank=True, null=True)
+    razorpay_signature = models.CharField(max_length=255, blank=True, null=True)
+
+    order_status = models.CharField(max_length=50, choices=ORDER_STATUS_CHOICES, default='PENDING_PAYMENT')
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    shipping_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    tracking_token = models.CharField(max_length=255, blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Order {self.order_id} - {self.order_status}"
+
+    def save(self, *args, **kwargs):
+        import uuid
+        if not self.tracking_token:
+            self.tracking_token = uuid.uuid4().hex
+        super().save(*args, **kwargs)
+
+
+class OrderItem(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
+    product = models.ForeignKey('products.Product', on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField(default=1)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    variant = models.CharField(max_length=255, blank=True, null=True)
+
+    def __str__(self):
+        return f"Item: {self.product.title} x {self.quantity} (Order: {self.order.order_id})"
+
+
+class Settlement(models.Model):
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending Payment'),
+        ('PAID', 'Admin Paid Seller'),
+        ('COMPLETED', 'Completed'),
+    ]
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='settlements')
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='settlements')
+    order_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    commission = models.DecimalField(max_digits=10, decimal_places=2)
+    razorpay_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    seller_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    payment_proof = models.URLField(max_length=2000, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Settlement {self.id} for {self.seller.username} - {self.status}"

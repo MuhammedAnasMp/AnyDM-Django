@@ -5,6 +5,7 @@ from django.conf import settings
 class Category(models.Model):
     name = models.CharField(max_length=100)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="categories", null=True, blank=True)
+    commission_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=10.00)
 
     class Meta:
         unique_together = ('name', 'user')
@@ -22,9 +23,12 @@ class Product(models.Model):
 
     STATUS_CHOICES = [
         ('DRAFT', 'Draft'),
+        ('PENDING_APPROVAL', 'Pending Approval'),
+        ('PUBLISHED', 'Published'),
         ('ACTIVE', 'Active'),
-        ('SOLD', 'Sold'),
-        ('ARCHIVED', 'Archived'),
+        ('REJECTED', 'Rejected'),
+        ('OUT_OF_STOCK', 'Out Of Stock'),
+        ('DISABLED', 'Disabled'),
     ]
 
     seller = models.ForeignKey(
@@ -43,6 +47,8 @@ class Product(models.Model):
 
     title = models.CharField(max_length=255, blank=True, null=True)
     description = models.TextField(blank=True, null=True)
+    brand = models.CharField(max_length=255, blank=True, null=True)
+    sku = models.CharField(max_length=100, blank=True, null=True)
 
     price = models.DecimalField(
         max_digits=10,
@@ -59,14 +65,28 @@ class Product(models.Model):
         help_text="Original price before any discounts or offers."
     )
 
+    discount_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        blank=True,
+        null=True,
+        help_text="Discounted selling price."
+    )
+
     currency = models.CharField(
         max_length=3,
         default="KWD"
     )
 
     stock = models.PositiveIntegerField(default=1)
+    weight = models.DecimalField(max_digits=10, decimal_places=2, default=0.0, help_text="Weight in kg")
+    dimensions = models.CharField(max_length=100, blank=True, null=True, help_text="L x W x H in cm")
+    shipping_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
 
     is_negotiable = models.BooleanField(default=True)
+    cod_enabled = models.BooleanField(default=True)
+    allow_return = models.BooleanField(default=False)
+    allow_refund = models.BooleanField(default=False)
 
     category = models.ForeignKey(
         Category,
@@ -110,7 +130,7 @@ class Product(models.Model):
     )
 
     status = models.CharField(
-        max_length=10,
+        max_length=20,
         choices=STATUS_CHOICES,
         default='DRAFT'
     )

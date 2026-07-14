@@ -45,6 +45,10 @@ class SystemSettings(models.Model):
     enable_subscription_ai = models.BooleanField(default=False)
     business_gemini_api_key = models.TextField(blank=True, default="")
 
+    # Marketplace configurations
+    global_cod_enabled = models.BooleanField(default=True)
+    default_commission_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=10.00)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

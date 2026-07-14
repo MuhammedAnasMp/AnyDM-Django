@@ -1,3 +1,8 @@
+import requests
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+import threading
 from django.utils import module_loading
 import json
 import hashlib
@@ -16,7 +21,7 @@ from django.utils import timezone
 from django.db.models import Q
 from django.db import connection, transaction, IntegrityError
 from django.core.cache import cache
-
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from apps.accounts.models import InstagramAccount
 from apps.products.models import Product
 from .models import CustomerInteraction, Customer, Enquiry, EnquiryProduct, AIAssistantConfig
@@ -28,6 +33,7 @@ try:
     CELERY_AVAILABLE = True
 except ImportError:
     CELERY_AVAILABLE = False
+
     def process_enquiry_background_task(*args, **kwargs):
         pass
 
@@ -52,14 +58,14 @@ def extract_media_id_safely(event_type, metadata):
                 return attach["id"]
 
             payload = attach.get("payload", {}) or {}
-            
+
             if "reel_video_id" in payload:
                 return payload["reel_video_id"]
             if "story_media_id" in payload:
                 return payload["story_media_id"]
             if "id" in payload:
                 return payload["id"]
-            
+
             url = payload.get("url")
             if url:
                 parsed_url = urlparse(url)
@@ -69,7 +75,8 @@ def extract_media_id_safely(event_type, metadata):
                     return asset_ids[0]
 
     except Exception as e:
-        logger.error(f"Error parsing fallback media ID context: {e}", exc_info=True)
+        logger.error(
+            f"Error parsing fallback media ID context: {e}", exc_info=True)
     return None
 
 
@@ -95,7 +102,8 @@ def detect_and_create_enquiry(interaction):
     seller_user = seller_account.user
 
     if not seller_user:
-        logger.warning(f"[CRM MATCH] Unable to process CRM matching. No seller user linked to account {seller_account.id}")
+        logger.warning(
+            f"[CRM MATCH] Unable to process CRM matching. No seller user linked to account {seller_account.id}")
         return None
 
     # Update customer interaction metrics
@@ -103,11 +111,13 @@ def detect_and_create_enquiry(interaction):
     customer.last_interaction_at = timezone.now()
     customer_update_fields = ["total_interactions", "last_interaction_at"]
 
-    matched_products = []  # List of tuples: (product, confidence_score, matched_media_id)
+    # List of tuples: (product, confidence_score, matched_media_id)
+    matched_products = []
     media_id = extract_media_id_safely(interaction.event_type, current_meta)
     clean_media_id = str(media_id).strip() if media_id else None
 
-    logger.info(f"[CRM MATCH] Processing interaction {interaction.id}. Extracted media_id: {clean_media_id}")
+    logger.info(
+        f"[CRM MATCH] Processing interaction {interaction.id}. Extracted media_id: {clean_media_id}")
 
     # Determine confidence score points based on activity signal intensity
     if interaction.event_type == "DM":
@@ -128,11 +138,13 @@ def detect_and_create_enquiry(interaction):
             status="ACTIVE"
         )
         product_count = products.count()
-        logger.info(f"[CRM MATCH] Querying product with media_id='{clean_media_id}'. Found {product_count} database matches.")
-        
+        logger.info(
+            f"[CRM MATCH] Querying product with media_id='{clean_media_id}'. Found {product_count} database matches.")
+
         for product in products:
-            matched_products.append((product, initial_confidence, clean_media_id))
-            
+            matched_products.append(
+                (product, initial_confidence, clean_media_id))
+
         # DIAGNOSTIC ENGINE: Runs if no match was found to check setup issues
         if product_count == 0:
             raw_products = Product.objects.filter(media_id=clean_media_id)
@@ -149,12 +161,14 @@ def detect_and_create_enquiry(interaction):
                     f"[CRM DIAGNOSTIC] Absolutely no product exists in your database with media_id='{clean_media_id}'."
                 )
     else:
-        logger.info(f"[CRM MATCH] No media ID extracted from interaction {interaction.id}. Skipping product matching.")
+        logger.info(
+            f"[CRM MATCH] No media ID extracted from interaction {interaction.id}. Skipping product matching.")
 
     # STRICT GUARD: If no active product matches this interaction, exit early without creating an Enquiry
     if not matched_products:
-        logger.info(f"[CRM MATCH] No active product matched for media_id '{clean_media_id}'. Skipping Enquiry creation.")
-        
+        logger.info(
+            f"[CRM MATCH] No active product matched for media_id '{clean_media_id}'. Skipping Enquiry creation.")
+
         # Save customer interaction metrics updates (counting the interaction only)
         customer.save(update_fields=customer_update_fields)
 
@@ -196,8 +210,9 @@ def detect_and_create_enquiry(interaction):
                     media_id=clean_media_id,
                     assigned_to=seller_user
                 )
-                logger.info(f"Created new open Enquiry {enquiry.id} for Customer {customer.id} on media_id {clean_media_id}.")
-                
+                logger.info(
+                    f"Created new open Enquiry {enquiry.id} for Customer {customer.id} on media_id {clean_media_id}.")
+
                 # Increment customer's total enquiries metric on brand new creations
                 customer.total_enquiries += 1
                 customer_update_fields.append("total_enquiries")
@@ -205,9 +220,11 @@ def detect_and_create_enquiry(interaction):
         except IntegrityError:
             # Concurrency fallback: retrieve the enquiry created concurrently by the competing thread
             enquiry = Enquiry.objects.select_for_update().filter(**enquiry_filter).first()
-            logger.info(f"Concurrent collision handled. Reusing Enquiry {enquiry.id} for Customer {customer.id}.")
+            logger.info(
+                f"Concurrent collision handled. Reusing Enquiry {enquiry.id} for Customer {customer.id}.")
     else:
-        logger.info(f"Re-using existing active Enquiry {enquiry.id} for Customer {customer.id} with media_id {clean_media_id}.")
+        logger.info(
+            f"Re-using existing active Enquiry {enquiry.id} for Customer {customer.id} with media_id {clean_media_id}.")
 
     # Save the customer statistics updates
     customer.save(update_fields=customer_update_fields)
@@ -225,7 +242,7 @@ def detect_and_create_enquiry(interaction):
             new_score = min(current_score + score_increment, 1.0)
             enquiry_product.confidence_score = new_score
             enquiry_product.save(update_fields=["confidence_score"])
-            
+
             logger.info(
                 f"[CRM MATCH] Increased confidence score for EnquiryProduct {enquiry_product.id} "
                 f"from {current_score} by {score_increment} (Activity: {interaction.event_type}) to {enquiry_product.confidence_score}"
@@ -257,21 +274,24 @@ def process_interaction_all(interaction):
     Processes a CustomerInteraction through both the CRM Enquiry system 
     and the Visual Automation Workflow engine.
     """
-    logger.info(f"[PROCESSOR] Starting full processing for interaction {interaction.id}")
-    
+    logger.info(
+        f"[PROCESSOR] Starting full processing for interaction {interaction.id}")
+
     # 1. CRM Enquiry / Product matching
     enquiry = None
     try:
         enquiry = detect_and_create_enquiry(interaction)
     except Exception as e:
-        logger.error(f"[PROCESSOR] CRM Enquiry detection failed for interaction {interaction.id}: {e}", exc_info=True)
-        
+        logger.error(
+            f"[PROCESSOR] CRM Enquiry detection failed for interaction {interaction.id}: {e}", exc_info=True)
+
     # 2. Visual Automation Workflow Engine
     try:
         from apps.automations.engine import execute_automation
         execute_automation(interaction)
     except Exception as e:
-        logger.error(f"[PROCESSOR] Automation workflow execution failed for interaction {interaction.id}: {e}", exc_info=True)
+        logger.error(
+            f"[PROCESSOR] Automation workflow execution failed for interaction {interaction.id}: {e}", exc_info=True)
 
     return enquiry
 
@@ -287,7 +307,7 @@ class InstagramWebhookView(View):
         if not ip:
             return True
         cache_key = f"rl_webhook_{ip}"
-        
+
         try:
             # Atomic evaluation of rate counts (behaves consistently across distributed environments)
             request_count = cache.get(cache_key, 0)
@@ -295,7 +315,8 @@ class InstagramWebhookView(View):
                 return False
             cache.set(cache_key, request_count + 1, timeout=60)
         except Exception as e:
-            logger.warning(f"Cache registry failure during rate evaluation: {e}")
+            logger.warning(
+                f"Cache registry failure during rate evaluation: {e}")
         return True
 
     def get(self, request, *args, **kwargs):
@@ -307,7 +328,8 @@ class InstagramWebhookView(View):
                 parsed_forward = urlparse(forward_url)
                 incoming_host = request.get_host()
                 if parsed_forward.netloc == incoming_host:
-                    logger.warning(f"Bypassed GET forwarding to prevent infinite loop on host: {incoming_host}")
+                    logger.warning(
+                        f"Bypassed GET forwarding to prevent infinite loop on host: {incoming_host}")
                     forward_url = None
         except Exception as e:
             logger.warning(f"Error fetching FORWARD_WEBHOOK_URL setting: {e}")
@@ -316,11 +338,13 @@ class InstagramWebhookView(View):
         if forward_url:
             try:
                 import requests
-                logger.info(f"Forwarding Instagram GET verification to {forward_url}")
+                logger.info(
+                    f"Forwarding Instagram GET verification to {forward_url}")
                 r = requests.get(forward_url, params=request.GET, timeout=15)
                 return HttpResponse(r.content, status=r.status_code, content_type=r.headers.get('Content-Type'))
             except Exception as e:
-                logger.error(f"Failed to forward Instagram GET verification to {forward_url}: {e}")
+                logger.error(
+                    f"Failed to forward Instagram GET verification to {forward_url}: {e}")
                 return HttpResponse("Failed to forward verification", status=502)
 
         mode = request.GET.get("hub.mode")
@@ -347,7 +371,8 @@ class InstagramWebhookView(View):
                 parsed_forward = urlparse(forward_url)
                 incoming_host = request.get_host()
                 if parsed_forward.netloc == incoming_host:
-                    logger.warning(f"Bypassed POST forwarding to prevent infinite loop on host: {incoming_host}")
+                    logger.warning(
+                        f"Bypassed POST forwarding to prevent infinite loop on host: {incoming_host}")
                     forward_url = None
         except Exception as e:
             logger.warning(f"Error fetching FORWARD_WEBHOOK_URL setting: {e}")
@@ -361,9 +386,10 @@ class InstagramWebhookView(View):
                     val = request.headers.get(h)
                     if val:
                         headers[h] = val
-                
+
                 # Forward payload asynchronously in a background thread to prevent Daphne blocking and timeouts
                 import threading
+
                 def execute_forward(url, body, hdrs):
                     try:
                         requests.post(url, data=body, headers=hdrs, timeout=15)
@@ -376,13 +402,15 @@ class InstagramWebhookView(View):
                     daemon=True
                 ).start()
             except Exception as e:
-                logger.error(f"Failed to initiate async Instagram webhook forward: {e}")
-            
+                logger.error(
+                    f"Failed to initiate async Instagram webhook forward: {e}")
+
             return HttpResponse("EVENT_RECEIVED", status=200)
 
         # Abort if rate limit exceeded
         if not self.check_rate_limit(request):
-            logger.warning(f"Rate limit exceeded on Webhook from IP: {request.META.get('REMOTE_ADDR')}")
+            logger.warning(
+                f"Rate limit exceeded on Webhook from IP: {request.META.get('REMOTE_ADDR')}")
             return HttpResponse("Too Many Requests", status=429)
 
         raw_body = request.body
@@ -406,14 +434,17 @@ class InstagramWebhookView(View):
                 entry_time = entry.get("time")
                 if entry_time:
                     try:
-                        ts = float(entry_time) / 1000.0 if len(str(int(entry_time))) > 10 else float(entry_time)
+                        ts = float(
+                            entry_time) / 1000.0 if len(str(int(entry_time))) > 10 else float(entry_time)
                         current_ts = timezone.now().timestamp()
-                        
+
                         if ts < current_ts - 3600 or ts > current_ts + 300:
-                            logger.warning(f"Rejected payload entry due to timestamp boundaries: {ts}")
+                            logger.warning(
+                                f"Rejected payload entry due to timestamp boundaries: {ts}")
                             continue
                     except Exception as e:
-                        logger.error(f"Error checking entry age parameters: {e}")
+                        logger.error(
+                            f"Error checking entry age parameters: {e}")
 
                 owner_account = InstagramAccount.objects.filter(
                     Q(instagram_scoped_id=owner_id) |
@@ -504,7 +535,8 @@ class InstagramWebhookView(View):
                                     media_id = payload.get("ig_post_media_id")
 
                                     # If Instagram later exposes carousel info
-                                    title = (payload.get("title") or "").lower()
+                                    title = (payload.get(
+                                        "title") or "").lower()
                                     if "carousel" in title:
                                         message_type = "CAROUSEL"
                                     else:
@@ -546,12 +578,14 @@ class InstagramWebhookView(View):
                                 from apps.automations.engine import execute_automation
                                 execute_automation(interaction)
                             except Exception as auto_err:
-                                logger.error(f"Error running automation synchronously: {auto_err}", exc_info=True)
+                                logger.error(
+                                    f"Error running automation synchronously: {auto_err}", exc_info=True)
 
                             # Trigger processing (tries asynchronous execution, falls back to synchronous execution)
                             if CELERY_AVAILABLE:
                                 try:
-                                    process_enquiry_background_task.delay(interaction.id)
+                                    process_enquiry_background_task.delay(
+                                        interaction.id)
                                 except Exception as e:
                                     logger.error(
                                         f"Celery delivery failure for ID {interaction.id}. "
@@ -562,33 +596,41 @@ class InstagramWebhookView(View):
                                         from .utils import broadcast_interaction
                                         broadcast_interaction(interaction)
                                     except Exception as sync_err:
-                                        logger.error(f"Synchronous fallback failed for interaction {interaction.id}: {sync_err}", exc_info=True)
+                                        logger.error(
+                                            f"Synchronous fallback failed for interaction {interaction.id}: {sync_err}", exc_info=True)
                             else:
-                                logger.warning(f"Celery task is offline. Executing synchronous matching fallback.")
+                                logger.warning(
+                                    f"Celery task is offline. Executing synchronous matching fallback.")
                                 try:
                                     process_interaction_all(interaction)
                                     from .utils import broadcast_interaction
                                     broadcast_interaction(interaction)
                                 except Exception as sync_err:
-                                    logger.error(f"Synchronous execution failed for interaction {interaction.id}: {sync_err}", exc_info=True)
+                                    logger.error(
+                                        f"Synchronous execution failed for interaction {interaction.id}: {sync_err}", exc_info=True)
 
                             # Trigger AI Support Assistant if active and inbound
                             if direction == "INBOUND" and not msg_data.get("is_echo", False):
-                                ai_config = getattr(owner_account, "ai_config", None)
+                                ai_config = getattr(
+                                    owner_account, "ai_config", None)
                                 if ai_config and ai_config.is_ai_mode_on and getattr(customer, "is_ai_enabled", True):
                                     if CELERY_AVAILABLE:
                                         try:
                                             from .tasks import process_ai_response_task
-                                            process_ai_response_task.delay(interaction.id)
+                                            process_ai_response_task.delay(
+                                                interaction.id)
                                         except Exception as celery_err:
-                                            logger.error(f"Failed to queue process_ai_response_task via Celery: {celery_err}")
+                                            logger.error(
+                                                f"Failed to queue process_ai_response_task via Celery: {celery_err}")
                                             import threading
                                             from .ai_assistant import process_ai_response
-                                            threading.Thread(target=process_ai_response, args=(interaction.id,)).start()
+                                            threading.Thread(target=process_ai_response, args=(
+                                                interaction.id,)).start()
                                     else:
                                         import threading
                                         from .ai_assistant import process_ai_response
-                                        threading.Thread(target=process_ai_response, args=(interaction.id,)).start()
+                                        threading.Thread(target=process_ai_response, args=(
+                                            interaction.id,)).start()
 
                         # -------------------------
                         # REACTION
@@ -603,7 +645,8 @@ class InstagramWebhookView(View):
 
                             if target_msg:
                                 meta = target_msg.metadata or {}
-                                reactions_history = meta.get("reactions_history", [])
+                                reactions_history = meta.get(
+                                    "reactions_history", [])
 
                                 timestamp_str = (
                                     platform_timestamp.isoformat()
@@ -643,10 +686,12 @@ class InstagramWebhookView(View):
                                 seller_account=owner_account,
                                 event_type="CLICK",
                                 direction=direction,
-                                message_text=f"Postback: {postback.get('payload')}"[:1000],
+                                message_text=f"Postback: {postback.get('payload')}"[
+                                    :1000],
                                 instagram_event_id=mid,
                                 platform_timestamp=platform_timestamp,
-                                metadata={"crm_processed": False, "postback": postback}
+                                metadata={"crm_processed": False,
+                                          "postback": postback}
                             )
 
                             # Run automation engine synchronously for instant replies
@@ -654,11 +699,13 @@ class InstagramWebhookView(View):
                                 from apps.automations.engine import execute_automation
                                 execute_automation(interaction)
                             except Exception as auto_err:
-                                logger.error(f"Error running automation synchronously: {auto_err}", exc_info=True)
+                                logger.error(
+                                    f"Error running automation synchronously: {auto_err}", exc_info=True)
 
                             if CELERY_AVAILABLE:
                                 try:
-                                    process_enquiry_background_task.delay(interaction.id)
+                                    process_enquiry_background_task.delay(
+                                        interaction.id)
                                 except Exception as e:
                                     logger.error(
                                         f"Celery task delivery failed for Postback Interaction {interaction.id}. "
@@ -667,31 +714,39 @@ class InstagramWebhookView(View):
                                     try:
                                         process_interaction_all(interaction)
                                     except Exception as sync_err:
-                                        logger.error(f"Synchronous fallback failed for Postback: {sync_err}", exc_info=True)
+                                        logger.error(
+                                            f"Synchronous fallback failed for Postback: {sync_err}", exc_info=True)
                             else:
-                                logger.warning(f"Celery task is offline. Processing postback synchronously.")
+                                logger.warning(
+                                    f"Celery task is offline. Processing postback synchronously.")
                                 try:
                                     process_interaction_all(interaction)
                                 except Exception as sync_err:
-                                    logger.error(f"Synchronous execution failed for Postback: {sync_err}", exc_info=True)
+                                    logger.error(
+                                        f"Synchronous execution failed for Postback: {sync_err}", exc_info=True)
 
                             # Trigger AI Support Assistant if active and inbound
                             if direction == "INBOUND":
-                                ai_config = getattr(owner_account, "ai_config", None)
+                                ai_config = getattr(
+                                    owner_account, "ai_config", None)
                                 if ai_config and ai_config.is_ai_mode_on and getattr(customer, "is_ai_enabled", True):
                                     if CELERY_AVAILABLE:
                                         try:
                                             from .tasks import process_ai_response_task
-                                            process_ai_response_task.delay(interaction.id)
+                                            process_ai_response_task.delay(
+                                                interaction.id)
                                         except Exception as celery_err:
-                                            logger.error(f"Failed to queue process_ai_response_task via Celery for postback: {celery_err}")
+                                            logger.error(
+                                                f"Failed to queue process_ai_response_task via Celery for postback: {celery_err}")
                                             import threading
                                             from .ai_assistant import process_ai_response
-                                            threading.Thread(target=process_ai_response, args=(interaction.id,)).start()
+                                            threading.Thread(target=process_ai_response, args=(
+                                                interaction.id,)).start()
                                     else:
                                         import threading
                                         from .ai_assistant import process_ai_response
-                                        threading.Thread(target=process_ai_response, args=(interaction.id,)).start()
+                                        threading.Thread(target=process_ai_response, args=(
+                                            interaction.id,)).start()
 
                         # -------------------------
                         # READ
@@ -702,10 +757,9 @@ class InstagramWebhookView(View):
                                 instagram_event_id=read.get("mid")
                             ).update(is_read=True)
 
-                        
-
                     except Exception as event_err:
-                        logger.error(f"Error handling event payload: {event_err}", exc_info=True)
+                        logger.error(
+                            f"Error handling event payload: {event_err}", exc_info=True)
                         continue
 
                 # =========================================================
@@ -725,7 +779,7 @@ class InstagramWebhookView(View):
                         comment_id = value.get("id")
                         media_info = value.get("media", {})
                         parent_id = value.get("parent_id")
-                        
+
                         # Comment idempotency check
                         if comment_id and CustomerInteraction.objects.filter(instagram_event_id=comment_id).exists():
                             continue
@@ -753,7 +807,7 @@ class InstagramWebhookView(View):
 
                         customer = None
                         if from_id:
-                            customer,created = Customer.objects.get_or_create(
+                            customer, created = Customer.objects.get_or_create(
                                 owner=owner_account,
                                 instagram_scoped_id=from_id
                             )
@@ -784,11 +838,13 @@ class InstagramWebhookView(View):
                                 from apps.automations.engine import execute_automation
                                 execute_automation(interaction)
                             except Exception as auto_err:
-                                logger.error(f"Error running automation synchronously: {auto_err}", exc_info=True)
+                                logger.error(
+                                    f"Error running automation synchronously: {auto_err}", exc_info=True)
 
                             if CELERY_AVAILABLE:
                                 try:
-                                    process_enquiry_background_task.delay(interaction.id)
+                                    process_enquiry_background_task.delay(
+                                        interaction.id)
                                 except Exception as e:
                                     logger.error(
                                         f"Celery task delivery failed for Comment Interaction {interaction.id}. "
@@ -799,22 +855,27 @@ class InstagramWebhookView(View):
                                         from .utils import broadcast_interaction
                                         broadcast_interaction(interaction)
                                     except Exception as sync_err:
-                                        logger.error(f"Synchronous fallback failed for Comment: {sync_err}", exc_info=True)
+                                        logger.error(
+                                            f"Synchronous fallback failed for Comment: {sync_err}", exc_info=True)
                             else:
-                                logger.warning(f"Celery task is offline. Processing Comment synchronously.")
+                                logger.warning(
+                                    f"Celery task is offline. Processing Comment synchronously.")
                                 try:
                                     process_interaction_all(interaction)
                                     from .utils import broadcast_interaction
                                     broadcast_interaction(interaction)
                                 except Exception as sync_err:
-                                    logger.error(f"Synchronous execution failed for Comment: {sync_err}", exc_info=True)
+                                    logger.error(
+                                        f"Synchronous execution failed for Comment: {sync_err}", exc_info=True)
 
                     except Exception as change_err:
-                        logger.error(f"Error handling comments/changes: {change_err}", exc_info=True)
+                        logger.error(
+                            f"Error handling comments/changes: {change_err}", exc_info=True)
                         continue
 
             except Exception as entry_err:
-                logger.error(f"Error handling webhook entry block: {entry_err}", exc_info=True)
+                logger.error(
+                    f"Error handling webhook entry block: {entry_err}", exc_info=True)
                 continue
 
         return HttpResponse("EVENT_RECEIVED")
@@ -837,15 +898,13 @@ class InstagramWebhookView(View):
 
         return hmac.compare_digest(expected, incoming)
 
-import requests
-import threading
 
 def fetch_and_save_profile_pic_background(customer_id, access_token):
     def task():
         try:
             from apps.crm.models import Customer
             customer = Customer.objects.get(id=customer_id)
-            
+
             needs_update = False
             if not customer.profile_pic:
                 needs_update = True
@@ -857,7 +916,7 @@ def fetch_and_save_profile_pic_background(customer_id, access_token):
                         needs_update = True
                 except Exception:
                     needs_update = True
-            
+
             if needs_update:
                 url = f"https://graph.instagram.com/v25.0/{customer.instagram_scoped_id}"
                 params = {
@@ -871,16 +930,13 @@ def fetch_and_save_profile_pic_background(customer_id, access_token):
                     if profile_pic:
                         customer.profile_pic = profile_pic
                         customer.save(update_fields=["profile_pic"])
-                        logger.info(f"Successfully updated profile picture for customer {customer.username}")
+                        logger.info(
+                            f"Successfully updated profile picture for customer {customer.username}")
         except Exception as e:
             logger.error(f"Error fetching profile pic in background: {e}")
 
     threading.Thread(target=task).start()
 
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 
 class InstagramConversationsView(APIView):
     permission_classes = [IsAuthenticated]
@@ -893,37 +949,39 @@ class InstagramConversationsView(APIView):
             pass
         account = user.active_instagram_account
         if not account:
-            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
-            
+            account = InstagramAccount.objects.filter(
+                user=user, is_active=True).first()
+
         if not account:
             return Response({'error': 'No active Instagram account found'}, status=400)
-            
+
         ig_user_id = account.instagram_user_id
         access_token = account.access_token
 
         if not ig_user_id or not access_token:
             return Response({'error': 'Instagram account details incomplete'}, status=400)
-            
+
         url = f"https://graph.instagram.com/v25.0/me/conversations?platform=instagram&fields=participants,updated_time,messages.limit(1){{message}}"
         headers = {
             'Authorization': f'Bearer {access_token}'
         }
-        
+
         try:
             response = requests.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
-            
+
             conversations = data.get('data', [])
-            
+
             # Enrich each conversation with 24-hour window status
             from django.utils import timezone
             from datetime import timedelta
             from apps.crm.models import Customer, CustomerInteraction
-            
+
             cutoff = timezone.now() - timedelta(hours=24)
-            customers = {c.instagram_scoped_id: c for c in Customer.objects.filter(owner=account)}
-            
+            customers = {
+                c.instagram_scoped_id: c for c in Customer.objects.filter(owner=account)}
+
             for conv in conversations:
                 participants = conv.get('participants', {}).get('data', [])
                 recipient_id = None
@@ -931,7 +989,7 @@ class InstagramConversationsView(APIView):
                     if str(p.get('id')) != str(ig_user_id):
                         recipient_id = p.get('id')
                         break
-                
+
                 conv['is_within_24h_window'] = False
                 conv['profile_pic'] = None
                 conv['is_ai_enabled'] = True
@@ -945,20 +1003,24 @@ class InstagramConversationsView(APIView):
                         ).exists()
                         conv['is_within_24h_window'] = has_recent_inbound
                         conv['profile_pic'] = customer.profile_pic
-                        conv['is_ai_enabled'] = getattr(customer, 'is_ai_enabled', True)
-                        fetch_and_save_profile_pic_background(customer.id, access_token)
-            
+                        conv['is_ai_enabled'] = getattr(
+                            customer, 'is_ai_enabled', True)
+                        fetch_and_save_profile_pic_background(
+                            customer.id, access_token)
+
             # Enrich last message if empty using database CustomerInteraction
             last_msg_ids = []
             for conv in conversations:
                 msgs = conv.get('messages', {}).get('data', [])
                 if msgs:
                     last_msg_ids.append(msgs[0].get('id'))
-            
+
             if last_msg_ids:
-                db_interactions = CustomerInteraction.objects.filter(instagram_event_id__in=last_msg_ids)
-                interaction_map = {intr.instagram_event_id: intr for intr in db_interactions}
-                
+                db_interactions = CustomerInteraction.objects.filter(
+                    instagram_event_id__in=last_msg_ids)
+                interaction_map = {
+                    intr.instagram_event_id: intr for intr in db_interactions}
+
                 for conv in conversations:
                     msgs = conv.get('messages', {}).get('data', [])
                     if msgs:
@@ -985,12 +1047,12 @@ def get_media_type(url):
     import hashlib
     import requests
     from django.core.cache import cache
-    
+
     cache_key = f"media_type_v2_{hashlib.md5(url.encode('utf-8')).hexdigest()}"
     media_type = cache.get(cache_key)
     if media_type:
         return media_type
-    
+
     try:
         r = requests.head(url, timeout=1.5)
         content_type = r.headers.get("Content-Type", "").lower()
@@ -1012,7 +1074,7 @@ def get_media_type(url):
                 media_type = "image"
         except Exception:
             media_type = "image"
-            
+
     cache.set(cache_key, media_type, timeout=86400)
     return media_type
 
@@ -1028,33 +1090,34 @@ class InstagramConversationMessagesView(APIView):
             pass
         account = user.active_instagram_account
         if not account:
-            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
-            
+            account = InstagramAccount.objects.filter(
+                user=user, is_active=True).first()
+
         if not account:
             return Response({'error': 'No active Instagram account found'}, status=400)
-            
+
         access_token = account.access_token
         if not access_token:
             return Response({'error': 'Instagram account details incomplete'}, status=400)
-            
+
         url = f"https://graph.instagram.com/v25.0/{conversation_id}"
-        
+
         # Get optional 'after' cursor from query params for pagination
         after_cursor = request.query_params.get('after')
-        
+
         params = {
             "fields": "participants,messages{id,message,created_time,from,to,attachments,shares,story}",
             "access_token": access_token
         }
         if after_cursor:
             params["fields"] = f"participants,messages.after({after_cursor}){{id,message,created_time,from,to,attachments,shares,story}}"
-        
+
         try:
             response = requests.get(url, params=params)
             response.raise_for_status()
             data = response.json()
             messages_conn = data.get('messages', {})
-            
+
             # Check 24-hour window status
             participants = data.get('participants', {}).get('data', [])
             recipient_id = None
@@ -1065,17 +1128,17 @@ class InstagramConversationMessagesView(APIView):
 
             is_within_24h_window = False
             last_interaction_time = None
-            
+
             if recipient_id:
                 from django.utils import timezone
                 from datetime import timedelta
                 from apps.crm.models import Customer, CustomerInteraction
-                
+
                 customer = Customer.objects.filter(
                     instagram_scoped_id=recipient_id,
                     owner=account
                 ).first()
-                
+
                 if customer:
                     cutoff = timezone.now() - timedelta(hours=24)
                     last_inbound = CustomerInteraction.objects.filter(
@@ -1083,33 +1146,36 @@ class InstagramConversationMessagesView(APIView):
                         direction="INBOUND",
                         event_type__in=["DM", "STORY_REPLY"]
                     ).order_by('-platform_timestamp').first()
-                    
+
                     if last_inbound:
                         last_interaction_time = last_inbound.platform_timestamp.isoformat()
                         if last_inbound.platform_timestamp >= cutoff:
                             is_within_24h_window = True
-                    
-                    fetch_and_save_profile_pic_background(customer.id, access_token)
-            
+
+                    fetch_and_save_profile_pic_background(
+                        customer.id, access_token)
+
             messages = messages_conn.get('data', [])
             if messages:
                 msg_ids = [m.get('id') for m in messages if m.get('id')]
-                db_interactions = CustomerInteraction.objects.filter(instagram_event_id__in=msg_ids)
-                interaction_map = {intr.instagram_event_id: intr for intr in db_interactions}
-                
+                db_interactions = CustomerInteraction.objects.filter(
+                    instagram_event_id__in=msg_ids)
+                interaction_map = {
+                    intr.instagram_event_id: intr for intr in db_interactions}
+
                 for msg in messages:
                     mid = msg.get('id')
                     intr = interaction_map.get(mid)
                     if intr:
                         if not msg.get('message') and intr.message_text:
                             msg['message'] = intr.message_text
-                        
+
                         # Enrich attachments if not present
                         if not msg.get('attachments') and not msg.get('shares'):
                             if intr.media_url:
                                 m_type = get_media_type(intr.media_url)
                                 key_name = f"{m_type}_data"
-                                
+
                                 msg["attachments"] = {
                                     "data": [{
                                         key_name: {"url": intr.media_url}
@@ -1120,11 +1186,13 @@ class InstagramConversationMessagesView(APIView):
                                 if isinstance(intr.render_payload, list):
                                     elements = intr.render_payload
                                 elif isinstance(intr.render_payload, dict):
-                                    elements = intr.render_payload.get("elements", [])
+                                    elements = intr.render_payload.get(
+                                        "elements", [])
                                 elif intr.metadata and "sent_payload" in intr.metadata:
                                     sent = intr.metadata["sent_payload"]
-                                    elements = sent.get("message", {}).get("attachment", {}).get("payload", {}).get("elements", [])
-                                
+                                    elements = sent.get("message", {}).get(
+                                        "attachment", {}).get("payload", {}).get("elements", [])
+
                                 if elements:
                                     msg["attachments"] = {
                                         "data": [{
@@ -1148,7 +1216,8 @@ class InstagramConversationMessagesView(APIView):
                 'last_interaction_time': last_interaction_time
             })
         except requests.RequestException as e:
-            logger.error(f"Error fetching Instagram messages for conversation {conversation_id}: {e}")
+            logger.error(
+                f"Error fetching Instagram messages for conversation {conversation_id}: {e}")
             err_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
                 err_msg = e.response.text
@@ -1166,7 +1235,8 @@ class CustomerEnquiriesView(APIView):
         user = request.user
         active_account = user.active_instagram_account
         if not active_account:
-            active_account = user.instagram_accounts.filter(is_active=True).first()
+            active_account = user.instagram_accounts.filter(
+                is_active=True).first()
 
         if not active_account:
             return Response({"error": "No active Instagram account found"}, status=400)
@@ -1198,7 +1268,7 @@ class CustomerEnquiriesView(APIView):
                     "main_media_url": ep.product.main_media_url,
                     "confidence_score": ep.confidence_score,
                 })
-            
+
             data.append({
                 "id": eq.id,
                 "title": eq.title,
@@ -1220,7 +1290,8 @@ class DeleteEnquiryProductView(APIView):
             user = request.user
             active_account = user.active_instagram_account
             if not active_account:
-                active_account = user.instagram_accounts.filter(is_active=True).first()
+                active_account = user.instagram_accounts.filter(
+                    is_active=True).first()
 
             if not active_account:
                 return Response({"error": "No active Instagram account found"}, status=400)
@@ -1230,14 +1301,14 @@ class DeleteEnquiryProductView(APIView):
                 id=pk,
                 enquiry__owner=active_account
             )
-            
+
             enquiry = enquiry_product.enquiry
             enquiry_product.delete()
-            
+
             # If no products left in this enquiry, delete the enquiry as well
             if not enquiry.products.exists():
                 enquiry.delete()
-                
+
             return Response({"message": "Product removed from enquiry successfully"}, status=200)
         except EnquiryProduct.DoesNotExist:
             return Response({"error": "Enquiry product not found"}, status=404)
@@ -1250,7 +1321,8 @@ class SendInstagramMessageView(APIView):
         user = request.user
         active_account = user.active_instagram_account
         if not active_account:
-            active_account = user.instagram_accounts.filter(is_active=True).first()
+            active_account = user.instagram_accounts.filter(
+                is_active=True).first()
 
         if not active_account or not active_account.access_token:
             return Response({"error": "No active Instagram account connected"}, status=400)
@@ -1313,7 +1385,7 @@ class SendInstagramMessageView(APIView):
             "Authorization": f"Bearer {active_account.access_token}",
             "Content-Type": "application/json"
         }
-        
+
         payload = {
             "recipient": {"id": recipient_id},
             "message": message_payload
@@ -1323,7 +1395,7 @@ class SendInstagramMessageView(APIView):
             r = requests.post(url, json=payload, headers=headers, timeout=15)
             r.raise_for_status()
             response_data = r.json()
-            
+
             # Log the outbound interaction in our DB
             try:
                 customer = Customer.objects.filter(
@@ -1333,7 +1405,7 @@ class SendInstagramMessageView(APIView):
                 if customer:
                     text_content = message_payload.get("text", "")
                     msg_type = "TEXT"
-                    
+
                     if "attachment" in message_payload:
                         att = message_payload["attachment"]
                         if att.get("type") == "template":
@@ -1346,7 +1418,7 @@ class SendInstagramMessageView(APIView):
                                 elems = tpl.get("elements", [])
                                 if elems:
                                     text_content = elems[0].get("title", "")
-                    
+
                     interaction = CustomerInteraction.objects.create(
                         customer=customer,
                         seller_account=active_account,
@@ -1384,10 +1456,11 @@ class UploadImageView(APIView):
         file_obj = request.FILES.get('image')
         if not file_obj:
             return Response({"error": "No image file provided"}, status=400)
-        
-        path = default_storage.save(os.path.join('uploads', file_obj.name), ContentFile(file_obj.read()))
+
+        path = default_storage.save(os.path.join(
+            'uploads', file_obj.name), ContentFile(file_obj.read()))
         file_url = request.build_absolute_uri(settings.MEDIA_URL + path)
-        
+
         return Response({"url": file_url})
 
 
@@ -1404,7 +1477,8 @@ class CustomerListView(APIView):
         user = request.user
         active_account = user.active_instagram_account
         if not active_account:
-            active_account = user.instagram_accounts.filter(is_active=True).first()
+            active_account = user.instagram_accounts.filter(
+                is_active=True).first()
 
         if not active_account:
             return Response({"results": [], "count": 0, "total_pages": 0, "current_page": 1}, status=200)
@@ -1415,7 +1489,7 @@ class CustomerListView(APIView):
         search_query = request.query_params.get('search', '').strip()
         if search_query:
             queryset = queryset.filter(
-                Q(username__icontains=search_query) | 
+                Q(username__icontains=search_query) |
                 Q(full_name__icontains=search_query)
             )
 
@@ -1453,7 +1527,7 @@ class CustomerListView(APIView):
         # Pagination
         limit = int(request.query_params.get('limit', 10))
         page = int(request.query_params.get('page', 1))
-        
+
         paginator = Paginator(queryset, limit)
         try:
             paginated_customers = paginator.page(page)
@@ -1486,13 +1560,13 @@ class CustomerListView(APIView):
                 ts = last_inbound.platform_timestamp or last_inbound.created_at
                 last_inbound_time = ts.isoformat()
                 last_inbound_message = last_inbound.message_text
-                
+
                 time_elapsed = now - ts
                 seconds_elapsed = time_elapsed.total_seconds()
-                
+
                 seconds_remaining_24h = max(0, 24 * 3600 - seconds_elapsed)
                 seconds_remaining_23h = max(0, 23 * 3600 - seconds_elapsed)
-                
+
                 is_within_24h_window = seconds_remaining_24h > 0
                 is_within_23h_window = seconds_remaining_23h > 0
 
@@ -1536,7 +1610,8 @@ class BroadcastMessageView(APIView):
         user = request.user
         active_account = user.active_instagram_account
         if not active_account:
-            active_account = user.instagram_accounts.filter(is_active=True).first()
+            active_account = user.instagram_accounts.filter(
+                is_active=True).first()
 
         if not active_account or not active_account.access_token:
             return Response({"error": "No active Instagram account connected"}, status=400)
@@ -1608,14 +1683,15 @@ class BroadcastMessageView(APIView):
             }
 
             try:
-                r = requests.post(url, json=payload, headers=headers, timeout=15)
+                r = requests.post(url, json=payload,
+                                  headers=headers, timeout=15)
                 r.raise_for_status()
                 response_data = r.json()
 
                 # Determine message type and content for logging
                 msg_type = "TEXT"
                 text_content = message_payload.get("text", "")
-                
+
                 if "attachment" in message_payload:
                     att = message_payload["attachment"]
                     if att.get("type") == "template":
@@ -1676,15 +1752,18 @@ class AIAssistantConfigView(APIView):
     def _resolve_account(self, request):
         """Resolve the target Instagram account from optional ?account_id= query param."""
         user = request.user
-        account_id = request.query_params.get("account_id") or request.data.get("account_id")
+        account_id = request.query_params.get(
+            "account_id") or request.data.get("account_id")
         if account_id:
-            account = InstagramAccount.objects.filter(id=account_id, user=user).first()
+            account = InstagramAccount.objects.filter(
+                id=account_id, user=user).first()
             if not account:
                 return None
         else:
             account = user.active_instagram_account
             if not account:
-                account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+                account = InstagramAccount.objects.filter(
+                    user=user, is_active=True).first()
         return account
 
     def get(self, request):
@@ -1692,7 +1771,8 @@ class AIAssistantConfigView(APIView):
         if not account:
             return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
 
-        config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
+        config, created = AIAssistantConfig.objects.get_or_create(
+            instagram_account=account)
         from apps.settings.models import SystemSettings
         sys_settings = SystemSettings.get_settings()
         return Response({
@@ -1723,8 +1803,9 @@ class AIAssistantConfigView(APIView):
         if not account:
             return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
 
-        config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
-        
+        config, created = AIAssistantConfig.objects.get_or_create(
+            instagram_account=account)
+
         data = request.data
         if "use_business_token" in data:
             use_business_token = bool(data.get("use_business_token"))
@@ -1737,7 +1818,7 @@ class AIAssistantConfigView(APIView):
             if api_key:
                 if not (api_key.startswith("AIzaSy") or api_key.startswith("AQ.")):
                     return Response({"error": "Invalid API Key format. Only Gemini API keys starting with 'AIzaSy' or 'AQ.' are supported."}, status=400)
-                
+
                 # Perform key validation call to Gemini
                 import requests
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={api_key}"
@@ -1745,12 +1826,14 @@ class AIAssistantConfigView(APIView):
                     "contents": [{"parts": [{"text": "Hello"}]}]
                 }
                 try:
-                    r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=8)
+                    r = requests.post(url, json=payload, headers={
+                                      "Content-Type": "application/json"}, timeout=8)
                     if r.status_code in [400, 403]:
                         err_msg = "Invalid Gemini API Key."
                         try:
                             res_json = r.json()
-                            err_msg = res_json.get("error", {}).get("message", err_msg)
+                            err_msg = res_json.get(
+                                "error", {}).get("message", err_msg)
                         except Exception:
                             pass
                         return Response({"error": f"API Key verification failed: {err_msg}"}, status=400)
@@ -1808,21 +1891,24 @@ class AIAssistantToggleGlobalView(APIView):
         user = request.user
         account_id = request.data.get("account_id")
         if account_id:
-            account = InstagramAccount.objects.filter(id=account_id, user=user).first()
+            account = InstagramAccount.objects.filter(
+                id=account_id, user=user).first()
         else:
             account = user.active_instagram_account
             if not account:
-                account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+                account = InstagramAccount.objects.filter(
+                    user=user, is_active=True).first()
         if not account:
             return Response({"error": "No active Instagram account connected"}, status=400)
 
-        config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
+        config, created = AIAssistantConfig.objects.get_or_create(
+            instagram_account=account)
         is_ai_mode_on = request.data.get("is_ai_mode_on")
         if is_ai_mode_on is not None:
             config.is_ai_mode_on = bool(is_ai_mode_on)
         else:
             config.is_ai_mode_on = not config.is_ai_mode_on
-            
+
         config.save(update_fields=["is_ai_mode_on"])
         return Response({"is_ai_mode_on": config.is_ai_mode_on})
 
@@ -1831,26 +1917,679 @@ class ToggleCustomerAIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, customer_id):
-        user = request.user
-        account = user.active_instagram_account
-        if not account:
-            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
-        if not account:
-            return Response({"error": "No active Instagram account connected"}, status=400)
+        try:
+            customer = Customer.objects.get(
+                instagram_scoped_id=customer_id, owner__user=request.user)
+        except Customer.DoesNotExist:
+            return Response({"error": "Customer not found"}, status=404)
 
-        customer, created = Customer.objects.get_or_create(
-            owner=account,
-            instagram_scoped_id=customer_id
-        )
-        
         is_ai_enabled = request.data.get("is_ai_enabled")
         if is_ai_enabled is not None:
             customer.is_ai_enabled = bool(is_ai_enabled)
         else:
             customer.is_ai_enabled = not customer.is_ai_enabled
-            
+
         customer.save(update_fields=["is_ai_enabled"])
         return Response({
             "customer_id": customer.instagram_scoped_id,
             "is_ai_enabled": customer.is_ai_enabled
         })
+
+
+class SellerKYCView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.accounts.models import SellerKYC
+        kyc, created = SellerKYC.objects.get_or_create(user=request.user)
+        return Response({
+            'full_name': kyc.full_name,
+            'pan_number': kyc.pan_number,
+            'aadhaar_number': kyc.aadhaar_number,
+            'bank_name': kyc.bank_name,
+            'bank_account_number': kyc.bank_account_number,
+            'bank_ifsc': kyc.bank_ifsc,
+            'status': kyc.status,
+            'is_card_verified': kyc.is_card_verified,
+        })
+
+    def post(self, request):
+        from apps.accounts.models import SellerKYC
+        import re
+
+        full_name = request.data.get('full_name', '').strip()
+        pan_number = request.data.get('pan_number', '').strip().upper()
+        aadhaar_number = request.data.get('aadhaar_number', '').strip()
+        bank_name = request.data.get('bank_name', '').strip()
+        bank_account_number = request.data.get('bank_account_number', '').strip()
+        bank_ifsc = request.data.get('bank_ifsc', '').strip().upper()
+
+        if len(full_name) < 3:
+            return Response({'error': 'Full name must be at least 3 characters.'}, status=400)
+
+        pan_regex = r'^[A-Z]{5}[0-9]{4}[A-Z]{1}$'
+        if not re.match(pan_regex, pan_number):
+            return Response({'error': 'Please enter a valid 10-character PAN Number (e.g. ABCDE1234F).'}, status=400)
+
+        aadhaar_regex = r'^\d{12}$'
+        if not re.match(aadhaar_regex, aadhaar_number):
+            return Response({'error': 'Aadhaar number must be exactly 12 digits.'}, status=400)
+
+        if len(bank_name) < 3:
+            return Response({'error': 'Please enter a valid Bank Name.'}, status=400)
+
+        ifsc_regex = r'^[A-Z]{4}0[A-Z0-9]{6}$'
+        if not re.match(ifsc_regex, bank_ifsc):
+            return Response({'error': 'Please enter a valid 11-character IFSC Code (e.g. SBIN0001234).'}, status=400)
+
+        bank_acc_regex = r'^\d{9,18}$'
+        if not re.match(bank_acc_regex, bank_account_number):
+            return Response({'error': 'Bank Account Number must be between 9 and 18 digits.'}, status=400)
+
+        kyc, created = SellerKYC.objects.get_or_create(user=request.user)
+        kyc.full_name = full_name
+        kyc.pan_number = pan_number
+        kyc.aadhaar_number = aadhaar_number
+        kyc.bank_name = bank_name
+        kyc.bank_account_number = bank_account_number
+        kyc.bank_ifsc = bank_ifsc
+
+        # When details are submitted, status changes to SUBMITTED
+        kyc.status = 'SUBMITTED'
+        kyc.save()
+        return Response({'message': 'KYC details submitted successfully', 'status': kyc.status})
+
+
+class AdminKYCListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response({'error': 'Only administrators can view seller KYC list.'}, status=403)
+        
+        from apps.accounts.models import SellerKYC
+        kyc_records = SellerKYC.objects.all().order_by('-updated_at')
+        
+        data = []
+        for record in kyc_records:
+            data.append({
+                'id': record.id,
+                'username': record.user.username,
+                'email': record.user.email,
+                'full_name': record.full_name,
+                'pan_number': record.pan_number,
+                'aadhaar_number': record.aadhaar_number,
+                'bank_name': record.bank_name,
+                'bank_account_number': record.bank_account_number,
+                'bank_ifsc': record.bank_ifsc,
+                'status': record.status,
+                'is_card_verified': record.is_card_verified,
+                'created_at': record.created_at,
+                'updated_at': record.updated_at,
+            })
+        return Response(data)
+
+    def post(self, request):
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response({'error': 'Only administrators can approve KYC submissions.'}, status=403)
+            
+        kyc_id = request.data.get('kyc_id')
+        action = request.data.get('action') # 'APPROVE' or 'REJECT'
+        
+        from apps.accounts.models import SellerKYC
+        try:
+            record = SellerKYC.objects.get(id=kyc_id)
+        except SellerKYC.DoesNotExist:
+            return Response({'error': 'KYC record not found.'}, status=404)
+            
+        if action == 'APPROVE':
+            record.status = 'APPROVED'
+        elif action == 'REJECT':
+            record.status = 'REJECTED'
+            # Automatically enable COD and disable Online Payments in WebsiteSettings when KYC is rejected
+            from apps.accounts.models import WebsiteSettings
+            WebsiteSettings.objects.filter(instagram_account__user=record.user).update(cod_enabled=True, online_payment_enabled=False)
+        else:
+            return Response({'error': 'Invalid action. Must be APPROVE or REJECT.'}, status=400)
+            
+        record.save()
+        return Response({'message': f'KYC status updated to {record.status}', 'status': record.status})
+
+
+class AdminOrderSettingsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response({'error': 'Only administrators can view order settings.'}, status=403)
+        
+        from apps.accounts.models import WebsiteSettings
+        settings = WebsiteSettings.objects.all().select_related('instagram_account').order_by('store_name')
+        
+        data = []
+        for s in settings:
+            data.append({
+                'id': s.id,
+                'username': s.instagram_account.username,
+                'store_name': s.store_name,
+                'store_slug': s.store_slug,
+                'return_policy': s.return_policy,
+                'cancellation_policy': s.cancellation_policy,
+            })
+        return Response(data)
+
+    def post(self, request):
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response({'error': 'Only administrators can modify order settings.'}, status=403)
+        
+        settings_id = request.data.get('settings_id')
+        return_policy = request.data.get('return_policy')
+        cancellation_policy = request.data.get('cancellation_policy')
+        
+        from apps.accounts.models import WebsiteSettings
+        try:
+            settings_obj = WebsiteSettings.objects.get(id=settings_id)
+        except WebsiteSettings.DoesNotExist:
+            return Response({'error': 'Website settings record not found.'}, status=404)
+            
+        if return_policy is not None:
+            settings_obj.return_policy = return_policy
+        if cancellation_policy is not None:
+            settings_obj.cancellation_policy = cancellation_policy
+            
+        settings_obj.save()
+        return Response({
+            'message': 'Order settings updated successfully.',
+            'id': settings_obj.id,
+            'return_policy': settings_obj.return_policy,
+            'cancellation_policy': settings_obj.cancellation_policy,
+        })
+
+
+class CheckoutView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from apps.products.models import Product
+        from apps.settings.models import SystemSettings
+        from apps.accounts.models import WebsiteSettings, InstagramAccount
+        from .models import Order, OrderItem, Settlement
+        import datetime
+        import random
+
+        data = request.data
+        username = data.get('username')
+        # [{'product_id': 1, 'quantity': 1, 'variant': 'M'}]
+        items = data.get('items', [])
+        customer_name = data.get('customer_name')
+        customer_email = data.get('customer_email')
+        customer_phone = data.get('customer_phone')
+        shipping_address = data.get('shipping_address')
+        shipping_pincode = data.get('shipping_pincode')
+        shipping_place = data.get('shipping_place')
+        shipping_district = data.get('shipping_district')
+        shipping_state = data.get('shipping_state')
+        payment_method = data.get('payment_method', 'COD').upper()
+
+        if not username or not items:
+            return Response({'error': 'Store username and items are required.'}, status=400)
+
+        try:
+            account = InstagramAccount.objects.get(
+                username__iexact=username, is_active=True)
+        except InstagramAccount.DoesNotExist:
+            return Response({'error': 'Store/Supplier not found.'}, status=404)
+
+        store_settings, _ = WebsiteSettings.objects.get_or_create(
+            instagram_account=account)
+        sys_settings = SystemSettings.get_settings()
+
+        # Enforce KYC verification and store settings for online payments
+        from apps.accounts.models import SellerKYC
+        seller_kyc, _ = SellerKYC.objects.get_or_create(user=account.user)
+        if payment_method == 'RAZORPAY':
+            if not store_settings.online_payment_enabled:
+                return Response({'error': 'Online payments have been disabled by this store.'}, status=400)
+            if seller_kyc.status != 'APPROVED':
+                return Response({'error': 'Online payment is currently unavailable for this store. Please complete KYC verification.'}, status=400)
+
+        # Resolve products and validate COD rules if selected
+        products_to_order = []
+        total_amount = 0
+        shipping_charge = 0
+
+        for item in items:
+            try:
+                prod = Product.objects.get(
+                    id=item['product_id'], instagram_account=account)
+            except Product.DoesNotExist:
+                return Response({'error': f"Product {item['product_id']} not found in this store."}, status=404)
+
+            if prod.stock < item['quantity']:
+                return Response({'error': f"Product {prod.title} is out of stock / insufficient quantity."}, status=400)
+
+            # COD Rules validation
+            if payment_method == 'COD':
+                if not sys_settings.global_cod_enabled:
+                    return Response({'error': 'Cash on Delivery is currently disabled globally.'}, status=400)
+                if not store_settings.cod_enabled:
+                    return Response({'error': 'This store does not support Cash on Delivery.'}, status=400)
+                if not prod.cod_enabled:
+                    return Response({'error': f"Product '{prod.title}' does not support Cash on Delivery."}, status=400)
+
+            products_to_order.append(
+                (prod, item['quantity'], item.get('variant', '')))
+            price = prod.discount_price if prod.discount_price else (
+                prod.price if prod.price else 0)
+            total_amount += price * item['quantity']
+            shipping_charge = max(shipping_charge, prod.shipping_charge)
+
+        # Total amount including shipping
+        total_amount += shipping_charge
+
+        # Unique sequential-like order ID generation: AMD-YYYYMMDD-XXXXXX
+        date_str = datetime.datetime.now().strftime("%Y%m%d")
+        seq_num = random.randint(100000, 999999)
+        order_id = f"AMD-{date_str}-{seq_num}"
+
+        # Create Order
+        order = Order.objects.create(
+            order_id=order_id,
+            seller=account.user,
+            instagram_account=account,
+            customer_name=customer_name,
+            customer_email=customer_email,
+            customer_phone=customer_phone,
+            shipping_address=shipping_address,
+            shipping_pincode=shipping_pincode,
+            shipping_place=shipping_place,
+            shipping_district=shipping_district,
+            shipping_state=shipping_state,
+            payment_method=payment_method,
+            payment_status='PENDING',
+            order_status='PENDING_PAYMENT',
+            total_amount=total_amount,
+            shipping_charge=shipping_charge
+        )
+
+        # Create items and update stock
+        for prod, qty, variant in products_to_order:
+            price = prod.discount_price if prod.discount_price else (
+                prod.price if prod.price else 0)
+            OrderItem.objects.create(
+                order=order,
+                product=prod,
+                quantity=qty,
+                price=price,
+                variant=variant
+            )
+            # Deduct stock
+            prod.stock = max(0, prod.stock - qty)
+            if prod.stock == 0:
+                prod.status = 'OUT_OF_STOCK'
+            prod.save()
+
+            # Record Settlement (For online payments only - AnyDM does not manage COD cash flows)
+            if payment_method == 'RAZORPAY':
+                from decimal import Decimal
+                comm_pct_val = prod.category.commission_percentage if (
+                    prod.category and prod.category.commission_percentage) else sys_settings.default_commission_percentage
+                comm_pct = Decimal(str(comm_pct_val))
+                commission = (price * qty) * (comm_pct / Decimal('100'))
+                razorpay_fee = (price * qty) * Decimal('0.02')
+                seller_amount = (price * qty) - commission - razorpay_fee
+
+                Settlement.objects.create(
+                    seller=account.user,
+                    order=order,
+                    order_amount=price * qty,
+                    commission=commission,
+                    razorpay_fee=razorpay_fee,
+                    seller_amount=seller_amount,
+                    status='PENDING'
+                )
+
+        # Initialize Razorpay Order if applicable
+        razorpay_order_id = None
+        if payment_method == 'RAZORPAY':
+            try:
+                import razorpay
+                import os
+                RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
+                RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
+                client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+                
+                # Razorpay amount is in paise (INR * 100)
+                amount_in_paise = int(total_amount * 100)
+                rzp_order = client.order.create({
+                    "amount": amount_in_paise,
+                    "currency": "INR",
+                    "receipt": order_id,
+                })
+                razorpay_order_id = rzp_order.get("id")
+                order.razorpay_order_id = razorpay_order_id
+                order.save(update_fields=["razorpay_order_id"])
+            except Exception as rzp_err:
+                print("[Razorpay Checkout Error] Failed to create order:", rzp_err)
+                return Response({'error': 'Failed to initialize payment gateway. Please try again later.'}, status=500)
+
+        # Optional: Send Instagram DM Confirmation for COD orders immediately,
+        # For Razorpay orders, we will send this DM AFTER payment verification is completed.
+        if payment_method == 'COD':
+            try:
+                from apps.automations.engine import send_instagram_dm
+                # Find customer scoped ID from recent messages if matching contact exists
+                customer = Customer.objects.filter(owner=account).filter(
+                    Q(full_name__iexact=customer_name) | Q(username__iexact=customer_name)
+                ).first()
+                if customer:
+                    # Validate 24-hour window
+                    from django.utils import timezone
+                    cutoff = timezone.now() - timezone.timedelta(hours=24)
+                    has_recent_inbound = CustomerInteraction.objects.filter(
+                        customer=customer,
+                        direction="INBOUND",
+                        platform_timestamp__gte=cutoff
+                    ).exists()
+
+                    if has_recent_inbound:
+                        msg_text = f"Hi {customer_name}! Your order {order_id} is successfully placed. Track status: http://172.16.4.167:3000/track/{order_id}"
+                        send_instagram_dm(account, customer.instagram_scoped_id, {
+                                          "text": msg_text}, dm_format="text")
+            except Exception as dm_err:
+                print("[Checkout-DM-Error] Failed to send DM:", dm_err)
+
+        import os
+        return Response({
+            'message': 'Order created successfully',
+            'order_id': order.order_id,
+            'tracking_token': order.tracking_token,
+            'total_amount': str(order.total_amount),
+            'razorpay_order_id': razorpay_order_id,
+            'razorpay_key_id': os.getenv("RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ"),
+            'amount': int(total_amount * 100),
+            'currency': 'INR'
+        })
+
+
+class ConfirmPaymentView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        order_id = request.data.get('order_id')
+        razorpay_payment_id = request.data.get('razorpay_payment_id')
+        razorpay_signature = request.data.get('razorpay_signature')
+
+        if not all([order_id, razorpay_payment_id, razorpay_signature]):
+            return Response({'error': 'Missing required fields for payment verification.'}, status=400)
+
+        from .models import Order
+        try:
+            order = Order.objects.get(order_id=order_id)
+        except Order.DoesNotExist:
+            return Response({'error': 'Order not found.'}, status=404)
+
+        # Verify payment signature
+        import razorpay
+        import os
+        RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
+        RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
+        client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
+        try:
+            client.utility.verify_payment_signature({
+                'razorpay_order_id': order.razorpay_order_id,
+                'razorpay_payment_id': razorpay_payment_id,
+                'razorpay_signature': razorpay_signature
+            })
+        except Exception as e:
+            print("[Razorpay Verification Error]:", e)
+            return Response({'error': 'Payment verification failed.'}, status=400)
+
+        order.payment_status = 'PAID'
+        order.order_status = 'PAYMENT_RECEIVED'
+        order.razorpay_payment_id = razorpay_payment_id
+        order.razorpay_signature = razorpay_signature
+        order.save(update_fields=['payment_status', 'order_status', 'razorpay_payment_id', 'razorpay_signature'])
+
+        # Optional: Send Instagram DM Confirmation for verified order
+        try:
+            from apps.automations.engine import send_instagram_dm
+            # Find customer scoped ID from recent messages if matching contact exists
+            customer = Customer.objects.filter(owner=order.instagram_account).filter(
+                Q(full_name__iexact=order.customer_name) | Q(username__iexact=order.customer_name)
+            ).first()
+            if customer:
+                # Validate 24-hour window
+                from django.utils import timezone
+                cutoff = timezone.now() - timezone.timedelta(hours=24)
+                has_recent_inbound = CustomerInteraction.objects.filter(
+                    customer=customer,
+                    direction="INBOUND",
+                    platform_timestamp__gte=cutoff
+                ).exists()
+
+                if has_recent_inbound:
+                    msg_text = f"Hi {order.customer_name}! Your payment for order {order_id} has been verified and confirmed. Track status: http://172.16.4.167:3000/track/{order_id}"
+                    send_instagram_dm(order.instagram_account, customer.instagram_scoped_id, {
+                                      "text": msg_text}, dm_format="text")
+        except Exception as dm_err:
+            print("[ConfirmPayment-DM-Error] Failed to send DM:", dm_err)
+
+        return Response({'message': 'Payment confirmed successfully.', 'order_id': order.order_id})
+
+
+class OrderTrackingView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, order_id):
+        from .models import Order
+        try:
+            order = Order.objects.get(order_id=order_id)
+        except Order.DoesNotExist:
+            return Response({'error': 'Order not found.'}, status=404)
+
+        items_data = []
+        for item in order.items.all():
+            items_data.append({
+                'product_title': item.product.title,
+                'quantity': item.quantity,
+                'price': str(item.price),
+                'variant': item.variant
+            })
+
+        # Return policies
+        from apps.accounts.models import WebsiteSettings
+        store_settings, _ = WebsiteSettings.objects.get_or_create(
+            instagram_account=order.instagram_account)
+
+        return Response({
+            'order_id': order.order_id,
+            'store_username': order.instagram_account.username,
+            'customer_name': order.customer_name,
+            'payment_method': order.payment_method,
+            'order_status': order.order_status,
+            'total_amount': str(order.total_amount),
+            'shipping_charge': str(order.shipping_charge),
+            'created_at': order.created_at,
+            'items': items_data,
+            'return_policy': store_settings.return_policy,
+            'cancellation_policy': store_settings.cancellation_policy,
+            'shipping_address': order.shipping_address,
+            'shipping_pincode': order.shipping_pincode,
+            'shipping_place': order.shipping_place,
+            'shipping_district': order.shipping_district,
+            'shipping_state': order.shipping_state,
+        })
+
+
+class SellerOrdersView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models import Order
+        from apps.products.models import Product
+        user = request.user
+        orders = Order.objects.filter(seller=user).order_by('-created_at')
+
+        orders_data = []
+        total_sales = 0
+        pending_count = 0
+        completed_count = 0
+
+        for order in orders:
+            items_data = []
+            for item in order.items.all():
+                items_data.append({
+                    'product_id': item.product.id,
+                    'product_title': item.product.title,
+                    'quantity': item.quantity,
+                    'price': str(item.price),
+                    'variant': item.variant
+                })
+
+            # Fetch settlement details for this order
+            from .models import Settlement
+            order_settlements = Settlement.objects.filter(order=order)
+            total_seller_amount = sum([s.seller_amount for s in order_settlements])
+            total_commission = sum([s.commission for s in order_settlements])
+            total_razorpay_fee = sum([s.razorpay_fee for s in order_settlements])
+
+            orders_data.append({
+                'id': order.id,
+                'order_id': order.order_id,
+                'customer_name': order.customer_name,
+                'customer_phone': order.customer_phone,
+                'shipping_address': order.shipping_address,
+                'shipping_pincode': order.shipping_pincode,
+                'shipping_place': order.shipping_place,
+                'shipping_district': order.shipping_district,
+                'shipping_state': order.shipping_state,
+                'payment_method': order.payment_method,
+                'payment_status': order.payment_status,
+                'order_status': order.order_status,
+                'total_amount': str(order.total_amount),
+                'created_at': order.created_at,
+                'items': items_data,
+                'seller_payout_amount': str(total_seller_amount) if order_settlements.exists() else None,
+                'total_commission': str(total_commission) if order_settlements.exists() else None,
+                'total_razorpay_fee': str(total_razorpay_fee) if order_settlements.exists() else None,
+            })
+
+            # Dashboard stats logic
+            if order.order_status in ['DELIVERED', 'COMPLETED']:
+                total_sales += float(order.total_amount)
+                completed_count += 1
+            elif order.order_status not in ['CANCELLED', 'PAYMENT_FAILED']:
+                pending_count += 1
+
+        # Low stock items (stock < 5)
+        low_stock_count = Product.objects.filter(
+            seller=user, stock__lt=5).count()
+        total_products_sold = sum([item.quantity for o in orders if o.order_status in [
+                                  'DELIVERED', 'COMPLETED'] for item in o.items.all()])
+
+        # Settlement info
+        from .models import Settlement
+        settlements = Settlement.objects.filter(seller=user, order__payment_method='RAZORPAY')
+        pending_settlement = sum([float(s.seller_amount)
+                                 for s in settlements if s.status == 'PENDING'])
+        total_earnings = sum([float(s.seller_amount)
+                             for s in settlements if s.status in ['PAID', 'COMPLETED']])
+
+        return Response({
+            'orders': orders_data,
+            'stats': {
+                'today_sales': str(total_sales),
+                'pending_orders': pending_count,
+                'completed_orders': completed_count,
+                'total_earnings': str(total_earnings),
+                'pending_settlement': str(pending_settlement),
+                'products_sold': total_products_sold,
+                'low_stock_items': low_stock_count
+            }
+        })
+
+    def patch(self, request):
+        from .models import Order
+        user = request.user
+        order_id = request.data.get('order_id')
+        new_status = request.data.get('status')
+
+        try:
+            order = Order.objects.get(order_id=order_id, seller=user)
+        except Order.DoesNotExist:
+            return Response({'error': 'Order not found.'}, status=404)
+
+        valid_statuses = [c[0] for c in Order.ORDER_STATUS_CHOICES]
+        if new_status not in valid_statuses:
+            return Response({'error': 'Invalid status choice.'}, status=400)
+
+        # Enforce No Return policy unless explicitly enabled or admin overrides
+        if new_status in ['RETURN_REQUESTED', 'RETURN_APPROVED']:
+            # Check if any product in order allows returns
+            has_return_allowed = any(
+                [item.product.allow_return for item in order.items.all()])
+            if not has_return_allowed and not (user.is_superuser or user.is_staff):
+                return Response({'error': 'Returns are not accepted for this order.'}, status=400)
+
+        order.order_status = new_status
+        if new_status == 'DELIVERED':
+            order.payment_status = 'PAID'
+        order.save()
+
+        return Response({'message': f'Order status updated to {new_status}'})
+
+
+class SellerSettlementsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models import Settlement
+        user = request.user
+        settlements = Settlement.objects.filter(
+            seller=user, order__payment_method='RAZORPAY').order_by('-created_at')
+
+        # If user is admin/staff, return ALL settlements to process payouts
+        if user.is_superuser or user.is_staff:
+            settlements = Settlement.objects.filter(order__payment_method='RAZORPAY').order_by('-created_at')
+
+        data = []
+        for s in settlements:
+            data.append({
+                'id': s.id,
+                'order_id': s.order.order_id,
+                'seller_username': s.seller.username,
+                'order_amount': str(s.order_amount),
+                'commission': str(s.commission),
+                'razorpay_fee': str(s.razorpay_fee),
+                'seller_amount': str(s.seller_amount),
+                'status': s.status,
+                'payment_proof': s.payment_proof,
+                'created_at': s.created_at,
+                'paid_at': s.paid_at
+            })
+        return Response(data)
+
+    def post(self, request):
+        # Admin marking settlement as paid with proof
+        from .models import Settlement
+        import django.utils.timezone as timezone
+
+        if not (request.user.is_superuser or request.user.is_staff):
+            return Response({'error': 'Only administrators can record settlements.'}, status=403)
+
+        settlement_id = request.data.get('settlement_id')
+        payment_proof = request.data.get('payment_proof')
+
+        try:
+            s = Settlement.objects.get(id=settlement_id)
+        except Settlement.DoesNotExist:
+            return Response({'error': 'Settlement record not found.'}, status=404)
+
+        s.status = 'PAID'
+        s.payment_proof = payment_proof
+        s.paid_at = timezone.now()
+        s.save()
+
+        return Response({'message': 'Settlement payout recorded successfully'})

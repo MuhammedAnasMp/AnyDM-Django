@@ -11,7 +11,7 @@ from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from .firebase_auth import verify_firebase_token, delete_firebase_user
-from .models import InstagramAccount, WebsiteSettings
+from .models import InstagramAccount, WebsiteSettings, SellerKYC
 from apps.products.models import Product
 from django.contrib.auth import get_user_model
 from django.conf import settings
@@ -864,14 +864,33 @@ class WebsiteSettingsView(APIView):
             }
         )
 
+        # Enforce COD if KYC is not approved
+        seller_kyc, _ = SellerKYC.objects.get_or_create(user=user)
+        if seller_kyc.status != 'APPROVED' and not settings_obj.cod_enabled:
+            settings_obj.cod_enabled = True
+            settings_obj.save(update_fields=['cod_enabled'])
+
         return Response({
             'store_name': settings_obj.store_name,
             'store_logo': settings_obj.store_logo,
+            'store_slug': settings_obj.store_slug,
+            'store_banner': settings_obj.store_banner,
+            'store_description': settings_obj.store_description,
+            'contact_email': settings_obj.contact_email,
+            'contact_phone': settings_obj.contact_phone,
+            'business_address': settings_obj.business_address,
+            'shipping_address': settings_obj.shipping_address,
+            'return_policy': settings_obj.return_policy,
+            'cancellation_policy': settings_obj.cancellation_policy,
+            'cod_enabled': settings_obj.cod_enabled,
+            'online_payment_enabled': settings_obj.online_payment_enabled,
             'show_related_products': settings_obj.show_related_products,
             'enable_instagram_button': settings_obj.enable_instagram_button,
             'enable_whatsapp_button': settings_obj.enable_whatsapp_button,
             'template_id': settings_obj.template_id,
             'theme_id': settings_obj.theme_id,
+            'privacy_policy': settings_obj.privacy_policy,
+            'terms_of_service': settings_obj.terms_of_service,
             'custom_colors': settings_obj.custom_colors,
             'custom_fonts': settings_obj.custom_fonts,
             'custom_settings': settings_obj.custom_settings,
@@ -893,6 +912,20 @@ class WebsiteSettingsView(APIView):
                 'store_logo': active_account.profile_picture_url or '',
             }
         )
+
+        seller_kyc, _ = SellerKYC.objects.get_or_create(user=user)
+
+        # Unique store slug validation
+        new_slug = request.data.get('store_slug', settings_obj.store_slug)
+        if new_slug:
+            new_slug = new_slug.strip().lower()
+            # If slug changes, check permission & uniqueness
+            if new_slug != settings_obj.store_slug:
+                if settings_obj.store_slug and not (user.is_superuser or user.is_staff):
+                    return Response({'error': 'Store URL slug cannot be changed without admin permission.'}, status=status.HTTP_400_BAD_REQUEST)
+                if WebsiteSettings.objects.filter(store_slug=new_slug).exclude(id=settings_obj.id).exists():
+                    return Response({'error': 'This store URL slug is already taken.'}, status=status.HTTP_400_BAD_REQUEST)
+                settings_obj.store_slug = new_slug
 
         # Update settings fields
         settings_obj.store_name = request.data.get(
@@ -921,6 +954,27 @@ class WebsiteSettingsView(APIView):
                         "Error deleting old logo from Cloudinary: %s", e)
 
         settings_obj.store_logo = new_logo
+        settings_obj.store_banner = request.data.get('store_banner', settings_obj.store_banner)
+        settings_obj.store_description = request.data.get('store_description', settings_obj.store_description)
+        settings_obj.contact_email = request.data.get('contact_email', settings_obj.contact_email)
+        settings_obj.contact_phone = request.data.get('contact_phone', settings_obj.contact_phone)
+        settings_obj.business_address = request.data.get('business_address', settings_obj.business_address)
+        settings_obj.shipping_address = request.data.get('shipping_address', settings_obj.shipping_address)
+        
+        # Enforce COD enabled if KYC is not approved
+        if seller_kyc.status != 'APPROVED':
+            settings_obj.cod_enabled = True
+        else:
+            settings_obj.cod_enabled = request.data.get('cod_enabled', settings_obj.cod_enabled)
+            
+        settings_obj.online_payment_enabled = request.data.get('online_payment_enabled', settings_obj.online_payment_enabled)
+
+        # Allow policy changes by the supplier/admin
+        settings_obj.return_policy = request.data.get('return_policy', settings_obj.return_policy)
+        settings_obj.cancellation_policy = request.data.get('cancellation_policy', settings_obj.cancellation_policy)
+        settings_obj.privacy_policy = request.data.get('privacy_policy', settings_obj.privacy_policy)
+        settings_obj.terms_of_service = request.data.get('terms_of_service', settings_obj.terms_of_service)
+
         settings_obj.show_related_products = request.data.get(
             'show_related_products', settings_obj.show_related_products)
         settings_obj.enable_instagram_button = request.data.get(
@@ -962,6 +1016,10 @@ class PublicStorefrontView(APIView):
             }
         )
 
+        # Enforce KYC verification check for online payments
+        seller_kyc, _ = SellerKYC.objects.get_or_create(user=account.user)
+        online_payment_enabled = settings_obj.online_payment_enabled and (seller_kyc.status == 'APPROVED')
+
         # Get active products for this supplier
         products = Product.objects.filter(
             instagram_account=account, status='ACTIVE').order_by('-created_at')
@@ -989,11 +1047,24 @@ class PublicStorefrontView(APIView):
             'settings': {
                 'store_name': settings_obj.store_name,
                 'store_logo': settings_obj.store_logo,
+                'store_slug': settings_obj.store_slug,
+                'store_banner': settings_obj.store_banner,
+                'store_description': settings_obj.store_description,
+                'contact_email': settings_obj.contact_email,
+                'contact_phone': settings_obj.contact_phone,
+                'business_address': settings_obj.business_address,
+                'shipping_address': settings_obj.shipping_address,
+                'return_policy': settings_obj.return_policy,
+                'cancellation_policy': settings_obj.cancellation_policy,
+                'cod_enabled': settings_obj.cod_enabled,
+                'online_payment_enabled': online_payment_enabled,
                 'show_related_products': settings_obj.show_related_products,
                 'enable_instagram_button': settings_obj.enable_instagram_button,
                 'enable_whatsapp_button': settings_obj.enable_whatsapp_button,
                 'template_id': settings_obj.template_id,
                 'theme_id': settings_obj.theme_id,
+                'privacy_policy': settings_obj.privacy_policy,
+                'terms_of_service': settings_obj.terms_of_service,
                 'custom_colors': settings_obj.custom_colors,
                 'custom_fonts': settings_obj.custom_fonts,
                 'custom_settings': settings_obj.custom_settings,
@@ -1025,6 +1096,10 @@ class PublicProductDetailView(APIView):
                 'store_logo': account.profile_picture_url or '',
             }
         )
+
+        # Enforce KYC verification check for online payments
+        seller_kyc, _ = SellerKYC.objects.get_or_create(user=account.user)
+        online_payment_enabled = settings_obj.online_payment_enabled and (seller_kyc.status == 'APPROVED')
 
         # Fetch gallery media items
         gallery_data = []
@@ -1072,13 +1147,23 @@ class PublicProductDetailView(APIView):
                 'id': product.id,
                 'title': product.title or 'Untitled Product',
                 'description': product.description or '',
+                'brand': product.brand,
+                'sku': product.sku,
                 'price': str(product.price) if product.price else None,
                 'original_price': str(product.original_price) if product.original_price else None,
+                'discount_price': str(product.discount_price) if product.discount_price else None,
                 'currency': product.currency,
                 'main_media_url': product.main_media_url,
                 'instagram_permalink': product.instagram_permalink,
                 'stock': product.stock,
+                'weight': str(product.weight) if product.weight else "0.00",
+                'dimensions': product.dimensions,
+                'shipping_charge': str(product.shipping_charge) if product.shipping_charge else "0.00",
                 'is_negotiable': product.is_negotiable,
+                'cod_enabled': product.cod_enabled,
+                'allow_return': product.allow_return,
+                'allow_refund': product.allow_refund,
+                'status': product.status,
                 'gallery': gallery_data,
                 'variants': variants,
                 'category': product.category.name if product.category else None,
@@ -1092,11 +1177,24 @@ class PublicProductDetailView(APIView):
             'settings': {
                 'store_name': settings_obj.store_name,
                 'store_logo': settings_obj.store_logo,
+                'store_slug': settings_obj.store_slug,
+                'store_banner': settings_obj.store_banner,
+                'store_description': settings_obj.store_description,
+                'contact_email': settings_obj.contact_email,
+                'contact_phone': settings_obj.contact_phone,
+                'business_address': settings_obj.business_address,
+                'shipping_address': settings_obj.shipping_address,
+                'return_policy': settings_obj.return_policy,
+                'cancellation_policy': settings_obj.cancellation_policy,
+                'cod_enabled': settings_obj.cod_enabled,
+                'online_payment_enabled': online_payment_enabled,
                 'show_related_products': settings_obj.show_related_products,
                 'enable_instagram_button': settings_obj.enable_instagram_button,
                 'enable_whatsapp_button': settings_obj.enable_whatsapp_button,
                 'template_id': settings_obj.template_id,
                 'theme_id': settings_obj.theme_id,
+                'privacy_policy': settings_obj.privacy_policy,
+                'terms_of_service': settings_obj.terms_of_service,
                 'custom_colors': settings_obj.custom_colors,
                 'custom_fonts': settings_obj.custom_fonts,
                 'custom_settings': settings_obj.custom_settings,

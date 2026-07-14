@@ -142,6 +142,19 @@ class WebsiteSettings(models.Model):
     store_name = models.CharField(max_length=255, blank=True, null=True)
     store_logo = models.URLField(max_length=2000, blank=True, null=True)
     
+    # Store settings
+    store_slug = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    store_banner = models.URLField(max_length=2000, blank=True, null=True)
+    store_description = models.TextField(blank=True, null=True)
+    contact_email = models.CharField(max_length=255, blank=True, null=True)
+    contact_phone = models.CharField(max_length=255, blank=True, null=True)
+    business_address = models.TextField(blank=True, null=True)
+    shipping_address = models.TextField(blank=True, null=True)
+    return_policy = models.BooleanField(default=False)
+    cancellation_policy = models.BooleanField(default=False)
+    cod_enabled = models.BooleanField(default=True)
+    online_payment_enabled = models.BooleanField(default=True)
+
     # Product Display Settings
     show_related_products = models.BooleanField(default=True)
     
@@ -153,6 +166,9 @@ class WebsiteSettings(models.Model):
     template_id = models.CharField(max_length=100, default='glass_monochrome')
     theme_id = models.CharField(max_length=100, default='dark')
     
+    privacy_policy = models.TextField(blank=True, null=True)
+    terms_of_service = models.TextField(blank=True, null=True)
+
     # Extensible custom fields
     custom_colors = models.JSONField(default=dict, blank=True)
     custom_fonts = models.JSONField(default=dict, blank=True)
@@ -163,6 +179,32 @@ class WebsiteSettings(models.Model):
 
     def __str__(self):
         return f"WebsiteSettings for {self.instagram_account.username}"
+
+
+class SellerKYC(models.Model):
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending Verification'),
+        ('SUBMITTED', 'Documents Submitted'),
+        ('REVIEW', 'Under Review'),
+        ('APPROVED', 'Approved'),
+        ('REJECTED', 'Rejected'),
+        ('SUSPENDED', 'Suspended'),
+    ]
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='kyc')
+    full_name = models.CharField(max_length=255, blank=True, null=True)
+    pan_number = models.CharField(max_length=50, blank=True, null=True)
+    aadhaar_number = models.CharField(max_length=50, blank=True, null=True)
+    bank_name = models.CharField(max_length=255, blank=True, null=True)
+    bank_account_number = models.CharField(max_length=100, blank=True, null=True)
+    bank_ifsc = models.CharField(max_length=50, blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    is_card_verified = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"KYC for {self.user.username} - {self.status}"
+
 
 
 # SystemSettings has been moved to apps.settings.models
