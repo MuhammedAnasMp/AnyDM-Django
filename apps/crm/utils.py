@@ -166,8 +166,18 @@ def serialize_interaction_to_message(interaction):
         
     attachments = None
     if interaction.metadata and isinstance(interaction.metadata, dict):
+        # Check direct attachments first (inbound messages)
         attachments = interaction.metadata.get("attachments")
         
+        # For outbound template messages, extract from sent_payload
+        if not attachments:
+            sent_payload = interaction.metadata.get("sent_payload", {})
+            msg = sent_payload.get("message", {}) if sent_payload else {}
+            att = msg.get("attachment") if msg else None
+            if att:
+                # Wrap in list so it's consistent with how the frontend expects attachments.data
+                attachments = [att]
+
     return {
         "id": interaction.instagram_event_id or f"temp_{interaction.id}",
         "from": from_user,
@@ -186,12 +196,11 @@ def broadcast_interaction(interaction):
     import logging
     logger = logging.getLogger(__name__)
     try:
-        if not interaction.seller_account or not interaction.seller_account.user:
-            logger.warning(f"Unable to broadcast interaction {interaction.id}. Missing seller account or owner user.")
+        if not interaction.seller_account:
+            logger.warning(f"Unable to broadcast interaction {interaction.id}. Missing seller account.")
             return
         
-        user_id = interaction.seller_account.user.id
-        group_name = f"user_{user_id}"
+        group_name = f"instagram_{interaction.seller_account.id}"
         
         serialized_msg = serialize_interaction_to_message(interaction)
         event = {

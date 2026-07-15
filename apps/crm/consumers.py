@@ -18,6 +18,7 @@ class InboxConsumer(AsyncWebsocketConsumer):
                 k, v = x.split("=", 1)
                 params[k] = v
         token_key = params.get("token")
+        instagram_id = params.get("instagram_id")
 
         if not token_key:
             logger.warning("WebSocket connection attempt without token.")
@@ -31,7 +32,10 @@ class InboxConsumer(AsyncWebsocketConsumer):
             return
 
         self.user = user
-        self.group_name = f"user_{self.user.id}"
+        if instagram_id:
+            self.group_name = f"instagram_{instagram_id}"
+        else:
+            self.group_name = f"user_{self.user.id}"
 
         # Join room group
         await self.channel_layer.group_add(
