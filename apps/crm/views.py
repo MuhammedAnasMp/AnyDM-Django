@@ -2593,3 +2593,223 @@ class SellerSettlementsView(APIView):
         s.save()
 
         return Response({'message': 'Settlement payout recorded successfully'})
+
+
+class PersistentMenuView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _resolve_account(self, request):
+        user = request.user
+        account_id = request.query_params.get("account_id") or request.data.get("account_id")
+        if account_id:
+            account = InstagramAccount.objects.filter(id=account_id, user=user).first()
+        else:
+            account = getattr(user, 'active_instagram_account', None)
+            if not account:
+                account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+        return account
+
+    def get(self, request):
+        account = self._resolve_account(request)
+        if not account:
+            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+
+        account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
+        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile?fields=persistent_menu"
+        headers = {"Authorization": f"Bearer {account.access_token}"}
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                items = data.get("data", [])
+                if items:
+                    persistent_menu = items[0].get("persistent_menu", [])
+                    return Response({"persistent_menu": persistent_menu})
+                return Response({"persistent_menu": []})
+            else:
+                return Response({"error": r.text, "status_code": r.status_code}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+    def post(self, request):
+        account = self._resolve_account(request)
+        if not account:
+            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+
+        composer_input_disabled = request.data.get("composer_input_disabled", False)
+        call_to_actions = request.data.get("call_to_actions", [])
+
+        cta_payloads = []
+        for cta in call_to_actions:
+            item_type = cta.get("type", "postback")
+            title = cta.get("title", "")[:20]
+            if item_type == "web_url":
+                cta_payloads.append({
+                    "type": "web_url",
+                    "title": title,
+                    "url": cta.get("url", ""),
+                    "webview_height_ratio": "tall"
+                })
+            else:
+                payload_key = cta.get("payload")
+                if not payload_key:
+                    payload_key = re.sub(r'[^a-zA-Z0-9_]', '', title.strip().replace(' ', '_')).upper()
+                    if not payload_key:
+                        payload_key = "MENU_ITEM"
+                cta_payloads.append({
+                    "type": "postback",
+                    "title": title,
+                    "payload": payload_key
+                })
+
+        payload = {
+            "platform": "instagram",
+            "persistent_menu": [
+                {
+                    "composer_input_disabled": composer_input_disabled,
+                    "locale": "default",
+                    "call_to_actions": cta_payloads
+                }
+            ]
+        }
+
+        account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
+        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile"
+        headers = {
+            "Authorization": f"Bearer {account.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=10)
+            if r.status_code == 200:
+                return Response({"result": "success", "data": r.json()})
+            else:
+                return Response({"error": r.text, "status_code": r.status_code}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+    def delete(self, request):
+        account = self._resolve_account(request)
+        if not account:
+            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+
+        # Also clean up any associated automation rules in the system
+        try:
+            from apps.automations.models import AutomationRule
+            AutomationRule.objects.filter(seller=account, name__startswith="Persistent Menu Flow:").delete()
+        except Exception as e:
+            logger.error(f"Error deleting persistent menu automation rules: {e}")
+
+        account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
+        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile?fields=['persistent_menu']"
+        headers = {"Authorization": f"Bearer {account.access_token}"}
+        try:
+            r = requests.delete(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                return Response({"result": "success"})
+            else:
+                return Response({"error": r.text, "status_code": r.status_code}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+
+class IceBreakersView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _resolve_account(self, request):
+        user = request.user
+        account_id = request.query_params.get("account_id") or request.data.get("account_id")
+        if account_id:
+            account = InstagramAccount.objects.filter(id=account_id, user=user).first()
+        else:
+            account = getattr(user, 'active_instagram_account', None)
+            if not account:
+                account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+        return account
+
+    def get(self, request):
+        account = self._resolve_account(request)
+        if not account:
+            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+
+        account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
+        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile?fields=ice_breakers"
+        headers = {"Authorization": f"Bearer {account.access_token}"}
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                items = data.get("data", [])
+                if items:
+                    ice_breakers = items[0].get("ice_breakers", [])
+                    return Response({"ice_breakers": ice_breakers})
+                return Response({"ice_breakers": []})
+            else:
+                return Response({"error": r.text, "status_code": r.status_code}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+    def post(self, request):
+        account = self._resolve_account(request)
+        if not account:
+            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+
+        ice_breakers = request.data.get("ice_breakers", [])
+        ib_payloads = []
+        for ib in ice_breakers:
+            question = ib.get("question", "")[:80]
+            payload_key = ib.get("payload")
+            if not payload_key:
+                payload_key = re.sub(r'[^a-zA-Z0-9_]', '', question.strip().replace(' ', '_')).upper()
+                if not payload_key:
+                    payload_key = "ICEBREAKER_ITEM"
+            ib_payloads.append({
+                "question": question,
+                "payload": payload_key
+            })
+
+        payload = {
+            "platform": "instagram",
+            "ice_breakers": ib_payloads
+        }
+
+        account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
+        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile"
+        headers = {
+            "Authorization": f"Bearer {account.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=10)
+            if r.status_code == 200:
+                return Response({"result": "success", "data": r.json()})
+            else:
+                return Response({"error": r.text, "status_code": r.status_code}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+    def delete(self, request):
+        account = self._resolve_account(request)
+        if not account:
+            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+
+        # Also clean up any associated automation rules in the system
+        try:
+            from apps.automations.models import AutomationRule
+            AutomationRule.objects.filter(seller=account, name__startswith="Welcome Message Flow:").delete()
+        except Exception as e:
+            logger.error(f"Error deleting icebreaker automation rules: {e}")
+
+        account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
+        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile?fields=['ice_breakers']"
+        headers = {"Authorization": f"Bearer {account.access_token}"}
+        try:
+            r = requests.delete(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                return Response({"result": "success"})
+            else:
+                return Response({"error": r.text, "status_code": r.status_code}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)

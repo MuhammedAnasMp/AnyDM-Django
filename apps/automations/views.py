@@ -33,6 +33,7 @@ class AutomationListCreateView(APIView):
                     "action_type": action.action_type,
                     "dm_format": action.dm_format,
                     "messages": action.messages,
+                    "parent_event": action.parent_event,
                     "quick_replies": action.quick_reply_payload.get("quick_replies", []) if action.quick_reply_payload else [],
                     "buttons": action.button_template_payload.get("buttons", []) if action.button_template_payload else [],
                     "elements": action.generic_template_payload.get("elements", []) if action.generic_template_payload else [],

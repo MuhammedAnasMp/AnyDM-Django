@@ -21,7 +21,9 @@ from .views import (
     SellerSettlementsView,
     ConfirmPaymentView,
     AdminKYCListView,
-    AdminOrderSettingsView
+    AdminOrderSettingsView,
+    PersistentMenuView,
+    IceBreakersView
 )
 
 urlpatterns = [
@@ -40,6 +42,10 @@ urlpatterns = [
     path("ai-settings/", AIAssistantConfigView.as_view(), name="ai-settings"),
     path("ai-settings/toggle-global/", AIAssistantToggleGlobalView.as_view(), name="ai-settings-toggle-global"),
     path("customers/<str:customer_id>/toggle-ai/", ToggleCustomerAIView.as_view(), name="toggle-customer-ai"),
+    
+    # Messenger Profile Settings
+    path("messenger-profile/persistent-menu/", PersistentMenuView.as_view(), name="messenger-profile-persistent-menu"),
+    path("messenger-profile/ice-breakers/", IceBreakersView.as_view(), name="messenger-profile-ice-breakers"),
     
     # Marketplace APIs
     path("seller/kyc/", SellerKYCView.as_view(), name="seller-kyc"),
