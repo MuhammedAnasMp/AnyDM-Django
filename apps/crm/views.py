@@ -2697,7 +2697,7 @@ class PersistentMenuView(APIView):
         # Also clean up any associated automation rules in the system
         try:
             from apps.automations.models import AutomationRule
-            AutomationRule.objects.filter(seller=account, name__startswith="Persistent Menu Flow:").delete()
+            AutomationRule.objects.filter(seller=account, name__startswith="Persistent Menu Flow").delete()
         except Exception as e:
             logger.error(f"Error deleting persistent menu automation rules: {e}")
 
@@ -2798,7 +2798,7 @@ class IceBreakersView(APIView):
         # Also clean up any associated automation rules in the system
         try:
             from apps.automations.models import AutomationRule
-            AutomationRule.objects.filter(seller=account, name__startswith="Welcome Message Flow:").delete()
+            AutomationRule.objects.filter(seller=account, name__startswith="Welcome Message Flow").delete()
         except Exception as e:
             logger.error(f"Error deleting icebreaker automation rules: {e}")
 

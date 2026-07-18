@@ -55,6 +55,8 @@ class AutomationListCreateView(APIView):
                 "visual_data": rule.visual_data or {},
                 "created_at": rule.created_at.isoformat(),
                 "updated_at": rule.updated_at.isoformat(),
+                "start_at": rule.start_at.isoformat() if rule.start_at else None,
+                "end_at": rule.end_at.isoformat() if rule.end_at else None,
             })
 
         return Response(data)
@@ -103,6 +105,8 @@ class AutomationListCreateView(APIView):
             rule.target_mode = t_data.get('target_mode', 'every')
             rule.target_media_ids = t_data.get('media_ids', [])
             rule.target_media_type = t_data.get('media_type', '')
+            rule.start_at = t_data.get('start_at') or None
+            rule.end_at = t_data.get('end_at') or None
 
         # Extract condition node details
         condition_node = next((n for n in nodes if n.get('type') == 'condition'), None)
@@ -319,6 +323,8 @@ class AutomationDetailView(APIView):
             "visual_data": rule.visual_data or {},
             "created_at": rule.created_at.isoformat(),
             "updated_at": rule.updated_at.isoformat(),
+            "start_at": rule.start_at.isoformat() if rule.start_at else None,
+            "end_at": rule.end_at.isoformat() if rule.end_at else None,
         })
 
     def delete(self, request, pk):

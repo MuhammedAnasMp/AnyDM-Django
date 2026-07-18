@@ -284,8 +284,19 @@ def execute_automation(interaction):
         
         if matching_actions.exists():
             print(f"[ENGINE] Found {matching_actions.count()} matching actions for postback {payload_str}.")
+            now_dt = timezone.now()
             for action in matching_actions:
                 rule = action.rule
+                if rule.start_at and now_dt < rule.start_at:
+                    print(f"[ENGINE - SCHEDULE] Rule '{rule.name}' has not started yet. Starts at: {rule.start_at}")
+                    logger.info(f"[ENGINE - SCHEDULE] Rule '{rule.name}' has not started yet. Starts at: {rule.start_at}")
+                    continue
+                if rule.end_at and now_dt > rule.end_at:
+                    print(f"[ENGINE - SCHEDULE] Rule '{rule.name}' has expired. Expired at: {rule.end_at}. Completing rule.")
+                    logger.info(f"[ENGINE - SCHEDULE] Rule '{rule.name}' has expired. Expired at: {rule.end_at}. Completing rule.")
+                    rule.status = 'completed'
+                    rule.save()
+                    continue
                 actions_log = []
                 action_type = action.action_type
                 dm_format = action.dm_format or "text"
@@ -432,9 +443,22 @@ def execute_automation(interaction):
     ).order_by('-created_at')
 
     print(f"[ENGINE] Found {rules.count()} active rules for seller {seller_account.id}")
+    now_dt = timezone.now()
     for rule in rules:
         print(f"[ENGINE] Evaluating rule: '{rule.name}' (Type: {rule.rule_type}, Match Type: {rule.condition_match_type})")
         logger.info(f"[ENGINE] Evaluating rule: '{rule.name}' (Type: {rule.rule_type}, Match Type: {rule.condition_match_type})")
+
+        # Check schedule
+        if rule.start_at and now_dt < rule.start_at:
+            print(f"[ENGINE - SCHEDULE] Rule '{rule.name}' has not started yet. Starts at: {rule.start_at}")
+            logger.info(f"[ENGINE - SCHEDULE] Rule '{rule.name}' has not started yet. Starts at: {rule.start_at}")
+            continue
+        if rule.end_at and now_dt > rule.end_at:
+            print(f"[ENGINE - SCHEDULE] Rule '{rule.name}' has expired. Expired at: {rule.end_at}. Completing rule.")
+            logger.info(f"[ENGINE - SCHEDULE] Rule '{rule.name}' has expired. Expired at: {rule.end_at}. Completing rule.")
+            rule.status = 'completed'
+            rule.save()
+            continue
 
         # 1. Trigger Type Check
         is_trigger_match = False
