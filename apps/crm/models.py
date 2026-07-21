@@ -42,6 +42,8 @@ class Customer(models.Model):
 
     notes = models.TextField(blank=True, null=True)
     is_ai_enabled = models.BooleanField(default=True)
+    waiting_for_order_id = models.BooleanField(default=False)
+    order_track_retry_count = models.IntegerField(default=0)
 
     class Meta:
         unique_together = ('owner', 'instagram_scoped_id')

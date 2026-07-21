@@ -473,7 +473,11 @@ class InstagramWebhookView(View):
                             except Exception:
                                 pass
 
-                        if str(sender_id) == str(owner_id):
+                        is_echo = False
+                        if "message" in event:
+                            is_echo = event["message"].get("is_echo", False)
+
+                        if str(sender_id) == str(owner_id) or is_echo:
                             direction = "OUTBOUND"
                             customer_id = recipient_id
                         else:
@@ -2624,8 +2628,16 @@ class PersistentMenuView(APIView):
                 items = data.get("data", [])
                 if items:
                     persistent_menu = items[0].get("persistent_menu", [])
-                    return Response({"persistent_menu": persistent_menu})
-                return Response({"persistent_menu": []})
+                    from apps.accounts.models import WebsiteSettings
+                    settings = WebsiteSettings.objects.filter(instagram_account=account).first()
+                    retry_limit = 3
+                    if settings and settings.custom_settings:
+                        retry_limit = settings.custom_settings.get("order_track_retry_limit", 3)
+                    return Response({
+                        "persistent_menu": persistent_menu,
+                        "order_track_retry_limit": retry_limit
+                    })
+                return Response({"persistent_menu": [], "order_track_retry_limit": 3})
             else:
                 return Response({"error": r.text, "status_code": r.status_code}, status=400)
         except Exception as e:
@@ -2638,6 +2650,7 @@ class PersistentMenuView(APIView):
 
         composer_input_disabled = request.data.get("composer_input_disabled", False)
         call_to_actions = request.data.get("call_to_actions", [])
+        order_track_retry_limit = request.data.get("order_track_retry_limit", 3)
 
         cta_payloads = []
         for cta in call_to_actions:
@@ -2683,6 +2696,14 @@ class PersistentMenuView(APIView):
         try:
             r = requests.post(url, headers=headers, json=payload, timeout=10)
             if r.status_code == 200:
+                # Save a copy locally in WebsiteSettings for reference
+                from apps.accounts.models import WebsiteSettings
+                settings, _ = WebsiteSettings.objects.get_or_create(instagram_account=account)
+                if not settings.custom_settings:
+                    settings.custom_settings = {}
+                settings.custom_settings["persistent_menu"] = call_to_actions
+                settings.custom_settings["order_track_retry_limit"] = order_track_retry_limit
+                settings.save()
                 return Response({"result": "success", "data": r.json()})
             else:
                 return Response({"error": r.text, "status_code": r.status_code}, status=400)
@@ -2784,6 +2805,13 @@ class IceBreakersView(APIView):
         try:
             r = requests.post(url, headers=headers, json=payload, timeout=10)
             if r.status_code == 200:
+                # Save a copy locally in WebsiteSettings for reference
+                from apps.accounts.models import WebsiteSettings
+                settings, _ = WebsiteSettings.objects.get_or_create(instagram_account=account)
+                if not settings.custom_settings:
+                    settings.custom_settings = {}
+                settings.custom_settings["ice_breakers"] = ice_breakers
+                settings.save()
                 return Response({"result": "success", "data": r.json()})
             else:
                 return Response({"error": r.text, "status_code": r.status_code}, status=400)

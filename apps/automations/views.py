@@ -7,6 +7,8 @@ from apps.accounts.models import InstagramAccount
 from apps.automations.models import AutomationRule, AutomationAction, GiveawayConfig, GiveawayReward, AutomationExecution
 from apps.crm.tasks import fake_redis_task
 from django.http import JsonResponse
+
+
 class AutomationListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -18,13 +20,15 @@ class AutomationListCreateView(APIView):
             pass
         account = user.active_instagram_account
         if not account:
-            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+            account = InstagramAccount.objects.filter(
+                user=user, is_active=True).first()
 
         if not account:
             return Response([], status=200)
 
-        rules = AutomationRule.objects.filter(seller=account).prefetch_related('actions')
-        
+        rules = AutomationRule.objects.filter(
+            seller=account).prefetch_related('actions')
+
         data = []
         for rule in rules:
             actions_data = []
@@ -39,7 +43,8 @@ class AutomationListCreateView(APIView):
                     "elements": action.generic_template_payload.get("elements", []) if action.generic_template_payload else [],
                 })
 
-            execution_count = AutomationExecution.objects.filter(rule=rule, status='success').count()
+            execution_count = AutomationExecution.objects.filter(
+                rule=rule, status='success').count()
 
             data.append({
                 "id": str(rule.id),
@@ -70,7 +75,8 @@ class AutomationListCreateView(APIView):
             pass
         account = user.active_instagram_account
         if not account:
-            account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+            account = InstagramAccount.objects.filter(
+                user=user, is_active=True).first()
 
         if not account:
             return Response({"error": "No active Instagram account found"}, status=400)
@@ -98,7 +104,8 @@ class AutomationListCreateView(APIView):
         rule.visual_data = {"nodes": nodes, "edges": edges}
 
         # Extract trigger node details
-        trigger_node = next((n for n in nodes if n.get('type') == 'trigger'), None)
+        trigger_node = next(
+            (n for n in nodes if n.get('type') == 'trigger'), None)
         if trigger_node:
             rule.rule_type = trigger_node.get('ruleType', 'comment_automation')
             t_data = trigger_node.get('data', {})
@@ -109,26 +116,41 @@ class AutomationListCreateView(APIView):
             rule.end_at = t_data.get('end_at') or None
 
         # Extract condition node details
-        condition_node = next((n for n in nodes if n.get('type') == 'condition'), None)
+        condition_node = next(
+            (n for n in nodes if n.get('type') == 'condition'), None)
         if condition_node:
             c_data = condition_node.get('data', {})
-            match_type = c_data.get('match_type', 'contains')
+            match_type = c_data.get('match_type')
+            if not match_type:
+                # Fallback: if keywords exist, default to contains. Otherwise default to any.
+                has_keywords = bool(c_data.get('keywords')
+                                    or c_data.get('keywords_equals'))
+                match_type = 'contains' if has_keywords else 'any'
+
             rule.condition_match_type = match_type
             if match_type == 'any':
                 rule.condition_keywords = []
+            elif match_type == 'equals':
+                rule.condition_keywords = c_data.get('keywords_equals', [])
             else:
                 rule.condition_keywords = c_data.get('keywords', [])
+            
+            rule.follower_gate_enabled = c_data.get('follower_gate', False)
+            rule.follower_gate_messages = c_data.get('follower_gate_messages', [])
         else:
             # Default to match any if no condition node exists
             rule.condition_match_type = 'any'
             rule.condition_keywords = []
+            rule.follower_gate_enabled = False
+            rule.follower_gate_messages = []
 
         rule.save()
 
         # Rebuild AutomationActions
         rule.actions.all().delete()
-        action_nodes = [n for n in nodes if n.get('type') == 'action']
-        
+        action_nodes = [n for n in nodes if n.get('type') == 'action' and not n.get(
+            'data', {}).get('is_placeholder', False)]
+
         # Sort actions by y-position to preserve execution order
         action_nodes.sort(key=lambda n: n.get('position', {}).get('y', 0))
 
@@ -156,8 +178,9 @@ class AutomationListCreateView(APIView):
                 qr_text = a_data.get('quick_reply_text', '')
                 qr_titles = a_data.get('quick_replies_titles', [])
                 if isinstance(qr_titles, str):
-                    qr_titles = [t.strip() for t in qr_titles.split(',') if t.strip()]
-                
+                    qr_titles = [t.strip()
+                                 for t in qr_titles.split(',') if t.strip()]
+
                 quick_replies = []
                 for title in qr_titles:
                     quick_replies.append({
@@ -181,7 +204,7 @@ class AutomationListCreateView(APIView):
                         pass
                 elif isinstance(btn_json, list):
                     buttons = btn_json
-                
+
                 # Convert 'product' buttons to 'web_url' for Meta Graph API compliance
                 cleaned_buttons = []
                 for btn in buttons:
@@ -189,7 +212,7 @@ class AutomationListCreateView(APIView):
                     if btn_copy.get("type") == "product":
                         btn_copy["type"] = "web_url"
                     cleaned_buttons.append(btn_copy)
-                
+
                 action.button_template_payload = {"buttons": cleaned_buttons}
                 if btn_text:
                     action.messages = [btn_text]
@@ -205,7 +228,7 @@ class AutomationListCreateView(APIView):
                         pass
                 elif isinstance(elems_json, list):
                     elements = elems_json
-                
+
                 # Convert 'product' buttons to 'web_url' for Meta Graph API compliance in carousel elements
                 cleaned_elements = []
                 for elem in elements:
@@ -219,8 +242,9 @@ class AutomationListCreateView(APIView):
                             card_btns.append(btn_copy)
                         elem_copy["buttons"] = card_btns
                     cleaned_elements.append(elem_copy)
-                
-                action.generic_template_payload = {"elements": cleaned_elements}
+
+                action.generic_template_payload = {
+                    "elements": cleaned_elements}
 
             elif dm_format == 'attachment':
                 attachments_raw = a_data.get('attachments', [])
@@ -255,11 +279,13 @@ class AutomationListCreateView(APIView):
             action.save()
 
         # Rebuild GiveawayConfig if present
-        giveaway_node = next((n for n in nodes if n.get('type') == 'giveaway_config'), None)
+        giveaway_node = next(
+            (n for n in nodes if n.get('type') == 'giveaway_config'), None)
         if giveaway_node:
             g_data = giveaway_node.get('data', {})
             g_config, _ = GiveawayConfig.objects.get_or_create(rule=rule)
-            g_config.selection_method = g_data.get('selection_method', 'random')
+            g_config.selection_method = g_data.get(
+                'selection_method', 'random')
             g_config.winner_count = g_data.get('winner_count', 1)
             g_config.finalize_at = g_data.get('finalize_at')
             g_config.save()
@@ -291,7 +317,8 @@ class AutomationDetailView(APIView):
 
     def get(self, request, pk):
         user = request.user
-        account = user.active_instagram_account or InstagramAccount.objects.filter(user=user, is_active=True).first()
+        account = user.active_instagram_account or InstagramAccount.objects.filter(
+            user=user, is_active=True).first()
         if not account:
             return Response({"error": "No active Instagram account"}, status=400)
 
@@ -307,7 +334,8 @@ class AutomationDetailView(APIView):
                 "elements": action.generic_template_payload.get("elements", []) if action.generic_template_payload else [],
             })
 
-        execution_count = AutomationExecution.objects.filter(rule=rule, status='success').count()
+        execution_count = AutomationExecution.objects.filter(
+            rule=rule, status='success').count()
 
         return Response({
             "id": str(rule.id),
@@ -329,7 +357,8 @@ class AutomationDetailView(APIView):
 
     def delete(self, request, pk):
         user = request.user
-        account = user.active_instagram_account or InstagramAccount.objects.filter(user=user, is_active=True).first()
+        account = user.active_instagram_account or InstagramAccount.objects.filter(
+            user=user, is_active=True).first()
         if not account:
             return Response({"error": "No active Instagram account"}, status=400)
 
@@ -343,13 +372,14 @@ class AutomationToggleView(APIView):
 
     def post(self, request, pk):
         user = request.user
-        account = user.active_instagram_account or InstagramAccount.objects.filter(user=user, is_active=True).first()
+        account = user.active_instagram_account or InstagramAccount.objects.filter(
+            user=user, is_active=True).first()
         if not account:
             return Response({"error": "No active Instagram account"}, status=400)
 
         rule = get_object_or_404(AutomationRule, id=pk, seller=account)
         is_enabled = request.data.get("isEnabled", False)
-        
+
         rule.status = "active" if is_enabled else "draft"
         rule.save(update_fields=["status"])
 
@@ -358,7 +388,6 @@ class AutomationToggleView(APIView):
             "id": rule.id,
             "status": "active" if rule.status == "active" else "disabled"
         })
-
 
 
 def cron_trigger(request):
