@@ -286,12 +286,13 @@ def process_interaction_all(interaction):
             f"[PROCESSOR] CRM Enquiry detection failed for interaction {interaction.id}: {e}", exc_info=True)
 
     # 2. Visual Automation Workflow Engine
-    try:
-        from apps.automations.engine import execute_automation
-        execute_automation(interaction)
-    except Exception as e:
-        logger.error(
-            f"[PROCESSOR] Automation workflow execution failed for interaction {interaction.id}: {e}", exc_info=True)
+    if not (interaction.metadata or {}).get("automation_executed"):
+        try:
+            from apps.automations.engine import execute_automation
+            execute_automation(interaction)
+        except Exception as e:
+            logger.error(
+                f"[PROCESSOR] Automation workflow execution failed for interaction {interaction.id}: {e}", exc_info=True)
 
     return enquiry
 
@@ -581,6 +582,10 @@ class InstagramWebhookView(View):
                             try:
                                 from apps.automations.engine import execute_automation
                                 execute_automation(interaction)
+                                if interaction.metadata is None:
+                                    interaction.metadata = {}
+                                interaction.metadata["automation_executed"] = True
+                                interaction.save(update_fields=["metadata"])
                             except Exception as auto_err:
                                 logger.error(
                                     f"Error running automation synchronously: {auto_err}", exc_info=True)
@@ -702,6 +707,10 @@ class InstagramWebhookView(View):
                             try:
                                 from apps.automations.engine import execute_automation
                                 execute_automation(interaction)
+                                if interaction.metadata is None:
+                                    interaction.metadata = {}
+                                interaction.metadata["automation_executed"] = True
+                                interaction.save(update_fields=["metadata"])
                             except Exception as auto_err:
                                 logger.error(
                                     f"Error running automation synchronously: {auto_err}", exc_info=True)
@@ -841,6 +850,10 @@ class InstagramWebhookView(View):
                             try:
                                 from apps.automations.engine import execute_automation
                                 execute_automation(interaction)
+                                if interaction.metadata is None:
+                                    interaction.metadata = {}
+                                interaction.metadata["automation_executed"] = True
+                                interaction.save(update_fields=["metadata"])
                             except Exception as auto_err:
                                 logger.error(
                                     f"Error running automation synchronously: {auto_err}", exc_info=True)

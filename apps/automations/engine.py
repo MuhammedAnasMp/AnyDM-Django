@@ -778,10 +778,16 @@ def execute_automation(interaction):
 
         # 5. Follower Gate Check
         if rule.follower_gate_enabled:
+            try:
+                from apps.crm.utils import sync_customer_profile
+                sync_customer_profile(customer, force=True)
+            except Exception as e:
+                logger.error(f"[ENGINE] Failed to sync customer profile for follower gate: {e}", exc_info=True)
+
             is_following = customer.is_following_business
-            if is_following is False:
+            if is_following is not True:
                 logger.info(
-                    f"[ENGINE] Customer {customer.id} does not follow business. Executing follower gate actions.")
+                    f"[ENGINE] Customer {customer.id} does not follow business (is_following: {is_following}). Executing follower gate actions.")
                 fg_messages = [msg for msg in (
                     rule.follower_gate_messages or []) if str(msg).strip()]
 
