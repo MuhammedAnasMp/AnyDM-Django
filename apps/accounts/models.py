@@ -87,6 +87,52 @@ class InstagramAccount(models.Model): # sellers
     connected_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     last_refreshed_at = models.DateTimeField(null=True, blank=True)
+    token_refreshed_at = models.DateTimeField(null=True, blank=True)
+    is_token_expired = models.BooleanField(default=False)
+
+    def refresh_token_if_needed(self):
+        """
+        Automatically refreshes the long-lived access token if it has been 30 days
+        since the last refresh.
+        """
+        from django.utils import timezone
+        import requests
+        
+        if not self.access_token or self.is_token_expired:
+            return False
+            
+        now = timezone.now()
+        last_refreshed = self.token_refreshed_at or self.connected_at
+        
+        # 30 days = 30 * 86400 seconds = 2592000 seconds
+        if last_refreshed and (now - last_refreshed).total_seconds() < 2592000:
+            return False
+            
+        try:
+            url = "https://graph.instagram.com/refresh_access_token"
+            params = {
+                "grant_type": "ig_refresh_token",
+                "access_token": self.access_token
+            }
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                new_token = data.get("access_token")
+                if new_token:
+                    self.access_token = new_token
+                    self.token_refreshed_at = now
+                    self.is_token_expired = False
+                    self.save(update_fields=['access_token', 'token_refreshed_at', 'is_token_expired'])
+                    return True
+            elif response.status_code in [400, 401, 403]:
+                self.is_token_expired = True
+                self.save(update_fields=['is_token_expired'])
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error refreshing Instagram access token for {self.username}: {e}")
+            
+        return False
 
     def refresh_profile_picture(self):
         """
@@ -121,6 +167,9 @@ class InstagramAccount(models.Model): # sellers
                 self.save(update_fields=['profile_picture_url', 'last_refreshed_at'])
                 print("prrrrrrrrrrrrrrroooooooooooooooooooofffffffffffffffiiiiiiiiiiiiilllllllllleeeeeeeeeeeeeeeeeeeeeeeeee")
                 return True
+            elif response.status_code in [400, 401, 403]:
+                self.is_token_expired = True
+                self.save(update_fields=['is_token_expired'])
         except Exception as e:
             # Import logging and log the error to avoid cluttering stdout but keep it debuggable
             import logging

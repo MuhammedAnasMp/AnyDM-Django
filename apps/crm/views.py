@@ -972,6 +972,19 @@ class InstagramConversationsView(APIView):
         if not account:
             return Response({'error': 'No active Instagram account found'}, status=400)
 
+        # Refresh token if needed
+        try:
+            account.refresh_token_if_needed()
+        except Exception as e:
+            logger.error(f"Error checking/refreshing token for {account.username}: {e}")
+
+        if account.is_token_expired:
+            return Response({
+                'error': 'Instagram session expired',
+                'code': 'TOKEN_EXPIRED',
+                'details': f'The Instagram session for @{account.username} has expired. Please go to Settings -> Manage Accounts to re-login.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         ig_user_id = account.instagram_user_id
         access_token = account.access_token
 
@@ -1054,6 +1067,10 @@ class InstagramConversationsView(APIView):
             })
         except requests.RequestException as e:
             logger.error(f"Error fetching Instagram conversations: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                if e.response.status_code in [401, 403]:
+                    account.is_token_expired = True
+                    account.save(update_fields=['is_token_expired'])
             err_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
                 err_msg = e.response.text
@@ -1587,6 +1604,8 @@ class CustomerListView(APIView):
                 is_within_24h_window = seconds_remaining_24h > 0
                 is_within_23h_window = seconds_remaining_23h > 0
 
+            fg = customer.follower_gains.first() if hasattr(customer, 'follower_gains') else None
+
             results.append({
                 "id": customer.id,
                 "instagram_scoped_id": customer.instagram_scoped_id,
@@ -1599,6 +1618,7 @@ class CustomerListView(APIView):
                 "last_interaction_at": customer.last_interaction_at.isoformat() if customer.last_interaction_at else None,
                 "is_following_business": customer.is_following_business,
                 "is_business_follow_user": customer.is_business_follow_user,
+                "gained_via_automation": fg.rule.name if fg else None,
                 "last_inbound_time": last_inbound_time,
                 "last_inbound_message": last_inbound_message,
                 "seconds_remaining_24h": seconds_remaining_24h,

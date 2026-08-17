@@ -8,6 +8,20 @@ class SubscriptionMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
+        # Authenticate JWT token if present in headers (since DRF auth runs after middleware)
+        if not (hasattr(request, 'user') and request.user and request.user.is_authenticated):
+            auth_header = request.headers.get('Authorization')
+            if auth_header and auth_header.startswith('Bearer '):
+                try:
+                    from rest_framework_simplejwt.authentication import JWTAuthentication
+                    jwt_auth = JWTAuthentication()
+                    validated_token = jwt_auth.get_validated_token(auth_header.split(' ')[1])
+                    user = jwt_auth.get_user(validated_token)
+                    if user:
+                        request.user = user
+                except Exception:
+                    pass
+
         if hasattr(request, 'user') and request.user and request.user.is_authenticated:
             user = request.user
             from django.utils import timezone

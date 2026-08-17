@@ -5,7 +5,7 @@ import random
 import hashlib
 from django.utils import timezone
 from django.db.models import Q
-from apps.automations.models import AutomationRule, AutomationAction, AutomationExecution
+from apps.automations.models import AutomationRule, AutomationAction, AutomationExecution, AutomationFollowerGain
 
 logger = logging.getLogger(__name__)
 
@@ -715,6 +715,14 @@ def execute_automation(interaction):
         elif rule.rule_type in ['story_automation', 'product_inquiry_story']:
             is_trigger_match = is_story_reply
 
+        elif rule.rule_type in ['media_share_dm', 'user_share_post_dm']:
+            is_media_share_event = (
+                interaction.message_type in ["REEL", "POST", "CAROUSEL"] or
+                bool(media_id) or
+                bool((interaction.metadata or {}).get("attachments"))
+            )
+            is_trigger_match = (event_type == "DM") and is_media_share_event and not is_story_reply
+
         elif rule.rule_type in ['dm_automation', 'giveaway_dm', 'product_inquiry_dm']:
             is_trigger_match = (
                 event_type in ["DM", "CLICK"]) and not is_story_reply
@@ -744,7 +752,10 @@ def execute_automation(interaction):
         keywords = [str(k).strip().lower()
                     for k in (rule.condition_keywords or [])]
 
-        if match_type == "any":
+        if rule.rule_type in ['media_share_dm', 'user_share_post_dm']:
+            # Media share automations trigger directly on media share without requiring keyword match
+            is_condition_match = True
+        elif match_type == "any":
             is_condition_match = True
         elif match_type == "equals":
             is_condition_match = message_text.lower() in keywords
@@ -1010,3 +1021,11 @@ def execute_automation(interaction):
             actions_log=actions_log,
             error_message=f"Executed {total_actions - failures}/{total_actions} actions successfully." if failures > 0 else None
         )
+
+        if overall_status == "success" and customer and customer.is_following_business:
+            try:
+                AutomationFollowerGain.objects.get_or_create(
+                    rule=rule, customer=customer, defaults={'source': 'automation_interaction'}
+                )
+            except Exception as e:
+                logger.error(f"[ENGINE] Failed to record follower gain: {e}")

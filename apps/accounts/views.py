@@ -163,6 +163,7 @@ class FirebaseLoginView(APIView):
                         'used_for_login': acc.used_for_login,
                         'is_active': acc.is_active,
                         'is_enabled': acc.is_enabled,
+                        'is_token_expired': acc.is_token_expired,
                     } for acc in instagram_accounts if acc.is_active
                 ]
             }, status=status.HTTP_200_OK)
@@ -346,6 +347,8 @@ class InstagramLoginView(APIView):
                     ig_account.used_for_login = True
                     ig_account.is_active = True
                     ig_account.last_refreshed_at = timezone.now()
+                    ig_account.token_refreshed_at = timezone.now()
+                    ig_account.is_token_expired = False
                     ig_account.save()
                     created = False
                 else:
@@ -359,7 +362,9 @@ class InstagramLoginView(APIView):
                         profile_picture_url=ig_profile_pic,
                         used_for_login=True,
                         is_active=True,
-                        last_refreshed_at=timezone.now()
+                        last_refreshed_at=timezone.now(),
+                        token_refreshed_at=timezone.now(),
+                        is_token_expired=False
                     )
                     created = True
                 print(
@@ -389,6 +394,8 @@ class InstagramLoginView(APIView):
                     ig_account.profile_picture_url = ig_profile_pic
                     ig_account.is_active = True  # Reactivate if it was soft-deleted
                     ig_account.last_refreshed_at = timezone.now()
+                    ig_account.token_refreshed_at = timezone.now()
+                    ig_account.is_token_expired = False
                     ig_account.save()
                     print(
                         f"[InstagramLogin] Logging in User(id={user.id}) via IG account {ig_username}.")
@@ -438,6 +445,8 @@ class InstagramLoginView(APIView):
                         ig_account.profile_picture_url = ig_profile_pic
                         ig_account.used_for_login = True
                         ig_account.is_active = True
+                        ig_account.token_refreshed_at = timezone.now()
+                        ig_account.is_token_expired = False
                         ig_account.save()
                     else:
                         ig_account = InstagramAccount.objects.create(
@@ -450,7 +459,9 @@ class InstagramLoginView(APIView):
                             profile_picture_url=ig_profile_pic,
                             used_for_login=True,
                             is_active=True,
-                            last_refreshed_at=timezone.now()
+                            last_refreshed_at=timezone.now(),
+                            token_refreshed_at=timezone.now(),
+                            is_token_expired=False
                         )
                     print(
                         f"[InstagramLogin] Associated User(id={user.id}) with IG account.")
@@ -495,7 +506,8 @@ class InstagramLoginView(APIView):
                     'instagram_global_id': ig_account.instagram_user_id,
                     'profile_picture_url': ig_account.profile_picture_url,
                     'used_for_login': ig_account.used_for_login,
-                    'is_enabled': ig_account.is_enabled
+                    'is_enabled': ig_account.is_enabled,
+                    'is_token_expired': ig_account.is_token_expired
                 }
             }, status=status.HTTP_200_OK)
 
@@ -547,7 +559,8 @@ class GetConnectedInstagramAccountsView(APIView):
                 'instagram_global_id': acc.instagram_user_id,
                 'profile_picture_url': acc.profile_picture_url,
                 'used_for_login': acc.used_for_login,
-                'is_enabled': acc.is_enabled
+                'is_enabled': acc.is_enabled,
+                'is_token_expired': acc.is_token_expired
             }
             for acc in instagram_accounts
         ]

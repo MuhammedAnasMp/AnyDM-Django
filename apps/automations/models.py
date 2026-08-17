@@ -64,6 +64,8 @@ RULE_TYPE_TO_TRIGGER = {
     'product_inquiry_comment': 'comment_event',
     'product_inquiry_story':   'story_reply',
     'product_inquiry_dm':      'dm_event',
+    'media_share_dm':          'media_share',
+    'user_share_post_dm':      'media_share',
 }
 
 
@@ -82,6 +84,8 @@ class AutomationRule(models.Model):
         ('product_inquiry_comment', 'Product Inquiry (Comment) → comment_event'),
         ('product_inquiry_story',   'Product Inquiry (Story)   → story_reply'),
         ('product_inquiry_dm',      'Product Inquiry (DM)      → dm_event'),
+        ('media_share_dm',          'Media Share DM            → media_share'),
+        ('user_share_post_dm',      'User Shares Post to DM    → media_share'),
     ]
 
     STATUS = [
@@ -526,3 +530,22 @@ class AutomationExecution(models.Model):
 
     def __str__(self):
         return f"{self.rule.name} | {self.status} | {self.executed_at:%Y-%m-%d %H:%M}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FOLLOWER GAIN TRACKING
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AutomationFollowerGain(models.Model):
+    rule = models.ForeignKey(AutomationRule, on_delete=models.CASCADE, related_name='follower_gains')
+    customer = models.ForeignKey('crm.Customer', on_delete=models.CASCADE, related_name='follower_gains')
+    source = models.CharField(max_length=50, default='follower_gate', help_text="follower_gate | automation_interaction")
+    gained_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('rule', 'customer')
+        ordering = ['-gained_at']
+
+    def __str__(self):
+        return f"{self.customer} followed via {self.rule.name}"
+

@@ -4,7 +4,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from apps.accounts.models import InstagramAccount
-from apps.automations.models import AutomationRule, AutomationAction, GiveawayConfig, GiveawayReward, AutomationExecution
+from apps.automations.models import AutomationRule, AutomationAction, GiveawayConfig, GiveawayReward, AutomationExecution, AutomationFollowerGain
 from apps.crm.tasks import fake_redis_task
 from django.http import JsonResponse
 
@@ -46,13 +46,16 @@ class AutomationListCreateView(APIView):
             execution_count = AutomationExecution.objects.filter(
                 rule=rule, status='success').count()
 
+            followers_gained = AutomationFollowerGain.objects.filter(rule=rule).count()
+
             data.append({
                 "id": str(rule.id),
                 "name": rule.name,
                 "rule_type": rule.rule_type,
                 "trigger_event": rule.trigger_event or "dm_event",
-                "status": "active" if rule.status == "active" else "disabled",
+                "status": rule.status,
                 "count": str(execution_count),
+                "followers_gained": followers_gained,
                 "keywords": rule.condition_keywords or [],
                 "target_mode": rule.target_mode,
                 "target_media_ids": rule.target_media_ids or [],
