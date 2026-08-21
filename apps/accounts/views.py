@@ -1049,6 +1049,7 @@ class PublicStorefrontView(APIView):
                 'instagram_permalink': p.instagram_permalink,
                 'stock': p.stock,
                 'is_negotiable': p.is_negotiable,
+                'category': p.category.name if p.category else None,
             })
 
         return Response({
