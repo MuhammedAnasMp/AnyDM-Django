@@ -23,10 +23,14 @@ from .views import (
     AdminKYCListView,
     AdminOrderSettingsView,
     PersistentMenuView,
-    IceBreakersView
+    IceBreakersView,
+    AnalyticsOverviewView,
+    RevenueOverviewView
 )
 
 urlpatterns = [
+    path("analytics/", AnalyticsOverviewView.as_view(), name="analytics-overview"),
+    path("revenue/", RevenueOverviewView.as_view(), name="revenue-overview"),
     path("admin/order-settings/", AdminOrderSettingsView.as_view(), name="admin-order-settings"),
     path("admin/kyc/", AdminKYCListView.as_view(), name="admin-kyc-list"),
     path("store/checkout/confirm-payment/", ConfirmPaymentView.as_view(), name="store-checkout-confirm-payment"),

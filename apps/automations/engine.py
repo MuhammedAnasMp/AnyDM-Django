@@ -84,6 +84,34 @@ def resolve_dynamic_prices(message_data, dm_format):
                 process_button(btn)
 
 
+def record_outbound_dm_metrics(account, response):
+    """
+    Tracks rolling DM timestamps (1h, 24h) and caches Meta rate limit usage headers.
+    """
+    try:
+        from django.core.cache import cache
+        import time, json
+        
+        now_ts = time.time()
+        key = f"ig_dm_timestamps_{account.id}"
+        timestamps = cache.get(key, [])
+        cutoff = now_ts - 86400  # retain last 24 hours
+        timestamps = [t for t in timestamps if t > cutoff]
+        timestamps.append(now_ts)
+        cache.set(key, timestamps, timeout=90000)
+
+        # Parse and cache X-Business-Use-Case-Usage headers
+        usage_header = response.headers.get("X-Business-Use-Case-Usage")
+        if usage_header:
+            try:
+                usage_json = json.loads(usage_header)
+                cache.set(f"ig_rate_limit_usage_{account.id}", usage_json, timeout=3600)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Failed to record outbound DM metrics for account {account.id}: {e}")
+
+
 def send_instagram_dm(account, recipient_id, message_data, dm_format="text", recipient_type="id"):
     """
     Sends a direct message to a user using the Meta Instagram Messaging API v25.0.
@@ -204,6 +232,8 @@ def send_instagram_dm(account, recipient_id, message_data, dm_format="text", rec
 
         response = requests.post(url, headers=headers,
                                  json=payload, timeout=15)
+        # Record rate limits and hourly velocity
+        record_outbound_dm_metrics(account, response)
         response_data = response.json()
         if response.status_code == 200:
             print(

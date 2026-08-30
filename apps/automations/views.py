@@ -9,6 +9,143 @@ from apps.crm.tasks import fake_redis_task
 from django.http import JsonResponse
 
 
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def build_visual_data_from_rule(rule):
+    """
+    Constructs React Flow visual_data (nodes and edges) from an AutomationRule and its related AutomationActions.
+    Ensures any rule (e.g. auto-created during product publishing) loads seamlessly in the visual builder.
+    """
+    if rule.visual_data and isinstance(rule.visual_data, dict):
+        nodes = rule.visual_data.get('nodes', [])
+        if isinstance(nodes, list) and len(nodes) > 0:
+            return rule.visual_data
+
+    nodes = []
+    edges = []
+
+    rule_type = rule.rule_type or 'comment_automation'
+    target_mode = rule.target_mode or 'selected'
+    target_media_ids = rule.target_media_ids or []
+    target_media_type = rule.target_media_type or ('reel' if rule_type == 'reel_automation' else ('story' if rule_type == 'story_automation' else 'post'))
+
+    # 1. Trigger Node
+    t_id = f"node-t-{rule.id}"
+    nodes.append({
+        "id": t_id,
+        "type": "trigger",
+        "position": {"x": 100, "y": 150},
+        "ruleType": rule_type,
+        "data": {
+            "target_mode": target_mode,
+            "media_ids": target_media_ids,
+            "media_type": target_media_type,
+            "start_at": rule.start_at.isoformat() if rule.start_at else None,
+            "end_at": rule.end_at.isoformat() if rule.end_at else None,
+        }
+    })
+
+    # 2. Condition Node
+    is_share = 'share' in rule_type
+    parent_id = t_id
+
+    if not is_share:
+        c_id = f"node-c-{rule.id}"
+        match_type = rule.condition_match_type or 'contains'
+        keywords = rule.condition_keywords or []
+        nodes.append({
+            "id": c_id,
+            "type": "condition",
+            "position": {"x": 550, "y": 150},
+            "ruleType": rule_type,
+            "data": {
+                "match_type": match_type,
+                "keywords": keywords,
+                "keywords_contains": keywords if match_type == 'contains' else [],
+                "keywords_equals": keywords if match_type == 'equals' else [],
+                "follower_gate_enabled": bool(rule.follower_gate_enabled),
+                "follower_gate_messages": rule.follower_gate_messages or []
+            }
+        })
+        edges.append({
+            "id": f"edge-{rule.id}-tc",
+            "source": t_id,
+            "target": c_id
+        })
+        parent_id = c_id
+
+    # 3. Action Nodes
+    actions = list(rule.actions.all().order_by('order'))
+    if not actions:
+        a_id = f"node-a-{rule.id}-0"
+        nodes.append({
+            "id": a_id,
+            "type": "action",
+            "position": {"x": 1000, "y": 150},
+            "ruleType": rule_type,
+            "data": {
+                "action_type": "send_dm",
+                "dm_format": "text",
+                "messages": ["Sent you a DM! Check your inbox."],
+                "is_placeholder": False,
+                "isPrimary": True,
+                "action_label": "DIRECT MESSAGE"
+            }
+        })
+        edges.append({
+            "id": f"edge-{rule.id}-act-0",
+            "source": parent_id,
+            "target": a_id
+        })
+    else:
+        for i, action in enumerate(actions):
+            a_id = f"node-a-{rule.id}-{action.id or i}"
+            pos_y = 80 + (i * 200)
+            is_primary = action.action_type == 'send_dm'
+            act_label = "DIRECT MESSAGE" if action.action_type == 'send_dm' else ("PUBLIC REPLY" if action.action_type == 'reply_comment' else "ACTION")
+
+            act_data = {
+                "action_type": action.action_type,
+                "action_label": act_label,
+                "isPrimary": is_primary,
+                "is_placeholder": False,
+                "messages": action.messages or [],
+                "dm_format": action.dm_format or 'text',
+            }
+
+            if action.generic_template_payload and action.generic_template_payload.get('elements'):
+                act_data["generic_template_elements_json"] = json.dumps(action.generic_template_payload.get('elements', []))
+            if action.button_template_payload and action.button_template_payload.get('buttons'):
+                act_data["button_template_buttons_json"] = json.dumps(action.button_template_payload.get('buttons', []))
+            if action.quick_reply_payload and action.quick_reply_payload.get('quick_replies'):
+                act_data["quick_replies_titles"] = [qr.get('title') for qr in action.quick_reply_payload.get('quick_replies', []) if qr.get('title')]
+
+            nodes.append({
+                "id": a_id,
+                "type": "action",
+                "position": {"x": 1000, "y": pos_y},
+                "ruleType": rule_type,
+                "data": act_data
+            })
+            edges.append({
+                "id": f"edge-{rule.id}-act-{i}",
+                "source": parent_id,
+                "target": a_id
+            })
+
+    constructed = {"nodes": nodes, "edges": edges}
+    rule.visual_data = constructed
+    try:
+        rule.save(update_fields=['visual_data'])
+    except Exception:
+        pass
+    return constructed
+
+
 class AutomationListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -60,7 +197,7 @@ class AutomationListCreateView(APIView):
                 "target_mode": rule.target_mode,
                 "target_media_ids": rule.target_media_ids or [],
                 "actions": actions_data,
-                "visual_data": rule.visual_data or {},
+                "visual_data": build_visual_data_from_rule(rule),
                 "created_at": rule.created_at.isoformat(),
                 "updated_at": rule.updated_at.isoformat(),
                 "start_at": rule.start_at.isoformat() if rule.start_at else None,
@@ -351,7 +488,7 @@ class AutomationDetailView(APIView):
             "target_mode": rule.target_mode,
             "target_media_ids": rule.target_media_ids or [],
             "actions": actions_data,
-            "visual_data": rule.visual_data or {},
+            "visual_data": build_visual_data_from_rule(rule),
             "created_at": rule.created_at.isoformat(),
             "updated_at": rule.updated_at.isoformat(),
             "start_at": rule.start_at.isoformat() if rule.start_at else None,
@@ -400,3 +537,153 @@ def cron_trigger(request):
         "status": "Django working",
         "message": "Task sent to Celery via Redis queue"
     })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCHEDULED POST VIEWSET & SERIALIZER
+# ─────────────────────────────────────────────────────────────────────────────
+
+from rest_framework import serializers, viewsets, status
+from rest_framework.decorators import action
+from django.utils import timezone
+from django.db import models
+from django.db.models import Q
+from .models import ScheduledPost
+from .tasks import publish_scheduled_post_task
+
+
+class ScheduledPostSerializer(serializers.ModelSerializer):
+    account_username = serializers.CharField(source='seller.username', read_only=True)
+    post_type_label = serializers.CharField(source='get_post_type_display', read_only=True)
+
+    class Meta:
+        model = ScheduledPost
+        fields = [
+            'id', 'post_type', 'post_type_label', 'media_url', 'cover_url',
+            'carousel_urls', 'caption', 'share_to_feed', 'scheduled_at',
+            'status', 'container_id', 'instagram_media_id', 'instagram_permalink',
+            'error_message', 'product', 'published_at', 'created_at', 'updated_at',
+            'account_username'
+        ]
+        read_only_fields = [
+            'id', 'container_id', 'instagram_media_id',
+            'instagram_permalink', 'error_message', 'published_at',
+            'created_at', 'updated_at', 'account_username', 'post_type_label'
+        ]
+
+
+class ScheduledPostViewSet(viewsets.ModelViewSet):
+    """
+    CRUD ViewSet for Instagram Scheduled Posts with Publish-Now support.
+    """
+    serializer_class = ScheduledPostSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = ScheduledPost.objects.filter(
+            models.Q(user=user) | models.Q(seller__user=user)
+        )
+        
+        # Filter by status if query param provided
+        status_param = self.request.query_params.get('status')
+        if status_param and status_param != 'ALL':
+            queryset = queryset.filter(status=status_param.upper())
+
+        # Filter by post_type
+        type_param = self.request.query_params.get('type')
+        if type_param and type_param != 'ALL':
+            queryset = queryset.filter(post_type=type_param.upper())
+
+        return queryset.order_by('-scheduled_at', '-created_at')
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        active_ig = getattr(user, 'active_instagram_account', None) or user.instagram_accounts.filter(is_active=True).first()
+        if not active_ig:
+            raise serializers.ValidationError({"error": "No connected Instagram account found. Please connect an account first."})
+
+        publish_now = self.request.data.get('publish_now', False)
+        scheduled_at = serializer.validated_data.get('scheduled_at')
+
+        if publish_now or not scheduled_at:
+            post = serializer.save(
+                user=user,
+                seller=active_ig,
+                scheduled_at=timezone.now(),
+                status='PROCESSING'
+            )
+            # Execute asynchronously or directly
+            try:
+                publish_scheduled_post_task.delay(post.id)
+            except Exception:
+                publish_scheduled_post_task(post.id)
+        else:
+            post = serializer.save(
+                user=user,
+                seller=active_ig,
+                status='SCHEDULED'
+            )
+            # If celery supports ETA, queue it; otherwise periodic worker handles it
+            try:
+                publish_scheduled_post_task.apply_async(args=[post.id], eta=post.scheduled_at)
+            except Exception:
+                pass
+
+        # Broadcast real-time creation event over WebSocket
+        try:
+            from .publishing import broadcast_scheduled_post_update
+            broadcast_scheduled_post_update(post, "created")
+        except Exception:
+            pass
+
+    def perform_destroy(self, instance):
+        post_id = instance.id
+        user_id = instance.user_id
+        seller_id = instance.seller_id
+        instance.delete()
+
+        # Broadcast deletion over WebSocket
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+            cl = get_channel_layer()
+            if cl:
+                payload = {
+                    "event_type": "scheduled_post_update",
+                    "action": "deleted",
+                    "post_id": post_id
+                }
+                if user_id:
+                    async_to_sync(cl.group_send)(f"user_{user_id}", {"type": "chat_message", "payload": payload})
+                if seller_id:
+                    async_to_sync(cl.group_send)(f"instagram_{seller_id}", {"type": "chat_message", "payload": payload})
+        except Exception:
+            pass
+
+    @action(detail=True, methods=['post'], url_path='publish-now')
+    def publish_now(self, request, pk=None):
+        post = self.get_object()
+        post.status = 'PROCESSING'
+        post.scheduled_at = timezone.now()
+        post.save(update_fields=['status', 'scheduled_at'])
+
+        try:
+            from .publishing import broadcast_scheduled_post_update
+            broadcast_scheduled_post_update(post, "processing")
+        except Exception:
+            pass
+
+        try:
+            publish_scheduled_post_task.delay(post.id)
+        except Exception:
+            publish_scheduled_post_task(post.id)
+
+        post.refresh_from_db()
+        serializer = self.get_serializer(post)
+        return Response({
+            "status": "success",
+            "message": "Publish triggered successfully",
+            "post": serializer.data
+        }, status=status.HTTP_200_OK)
+

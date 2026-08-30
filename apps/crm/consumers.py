@@ -32,28 +32,28 @@ class InboxConsumer(AsyncWebsocketConsumer):
             return
 
         self.user = user
+        self.groups_to_join = [f"user_{self.user.id}"]
         if instagram_id:
-            self.group_name = f"instagram_{instagram_id}"
-        else:
-            self.group_name = f"user_{self.user.id}"
+            self.groups_to_join.append(f"instagram_{instagram_id}")
 
-        # Join room group
-        await self.channel_layer.group_add(
-            self.group_name,
-            self.channel_name
-        )
-
-        await self.accept()
-        logger.info(f"WebSocket connected: User {self.user.id} joined group {self.group_name}")
-
-    async def disconnect(self, close_code):
-        if hasattr(self, 'group_name'):
-            # Leave room group
-            await self.channel_layer.group_discard(
-                self.group_name,
+        # Join all relevant groups
+        for grp in self.groups_to_join:
+            await self.channel_layer.group_add(
+                grp,
                 self.channel_name
             )
-            logger.info(f"WebSocket disconnected: User {self.user.id} left group {self.group_name}")
+
+        await self.accept()
+        logger.info(f"WebSocket connected: User {self.user.id} joined groups {self.groups_to_join}")
+
+    async def disconnect(self, close_code):
+        if hasattr(self, 'groups_to_join'):
+            for grp in self.groups_to_join:
+                await self.channel_layer.group_discard(
+                    grp,
+                    self.channel_name
+                )
+            logger.info(f"WebSocket disconnected: User {self.user.id} left groups {self.groups_to_join}")
 
     @database_sync_to_async
     def get_user_from_token(self, token_key):

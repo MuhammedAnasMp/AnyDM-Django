@@ -1,5 +1,6 @@
 from django.db import models, transaction
 from django.core.exceptions import ValidationError
+from django.conf import settings
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -548,4 +549,81 @@ class AutomationFollowerGain(models.Model):
 
     def __str__(self):
         return f"{self.customer} followed via {self.rule.name}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INSTAGRAM CONTENT SCHEDULER & PUBLISHER
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ScheduledPost(models.Model):
+    POST_TYPES = [
+        ('REELS', 'Instagram Reel'),
+        ('IMAGE', 'Image Post'),
+        ('VIDEO', 'Video Post'),
+        ('STORIES', 'Story'),
+        ('CAROUSEL', 'Carousel Post'),
+    ]
+
+    STATUS_CHOICES = [
+        ('DRAFT', 'Draft'),
+        ('SCHEDULED', 'Scheduled'),
+        ('PROCESSING', 'Processing Container'),
+        ('PUBLISHED', 'Published'),
+        ('FAILED', 'Failed'),
+        ('CANCELLED', 'Cancelled'),
+    ]
+
+    seller = models.ForeignKey(
+        'accounts.InstagramAccount',
+        on_delete=models.CASCADE,
+        related_name='scheduled_posts'
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='scheduled_posts'
+    )
+    post_type = models.CharField(max_length=20, choices=POST_TYPES, default='REELS')
+    media_url = models.URLField(max_length=2000, help_text="Cloudinary media URL (Video or Image)")
+    cover_url = models.URLField(max_length=2000, blank=True, null=True, help_text="Optional custom thumbnail cover URL for reels/video")
+    carousel_urls = models.JSONField(default=list, blank=True, help_text="List of media URLs if post_type is CAROUSEL")
+    caption = models.TextField(blank=True, default="", help_text="Post caption with hashtags")
+    share_to_feed = models.BooleanField(default=True, help_text="For reels: whether to share to the main profile feed")
+    
+    scheduled_at = models.DateTimeField(null=True, blank=True, help_text="Target datetime to publish")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='SCHEDULED', db_index=True)
+    
+    # Instagram response attributes
+    container_id = models.CharField(max_length=255, blank=True, null=True, help_text="Creation container ID from Meta")
+    instagram_media_id = models.CharField(max_length=255, blank=True, null=True, help_text="Published media ID")
+    instagram_permalink = models.URLField(max_length=1000, blank=True, null=True, help_text="Instagram permalink to live post")
+    error_message = models.TextField(blank=True, null=True, help_text="Error message if publishing failed")
+    
+    # Product link (if created from product catalog)
+    product = models.ForeignKey(
+        'products.Product',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='scheduled_instagram_posts'
+    )
+    
+    # Auto-DM Automation Payload
+    automation_config = models.JSONField(default=dict, blank=True, help_text="Auto-created comment/reply automation settings for this post")
+    
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-scheduled_at', '-created_at']
+        indexes = [
+            models.Index(fields=['status', 'scheduled_at']),
+        ]
+
+    def __str__(self):
+        return f"[{self.get_post_type_display()}] {self.seller.username} - {self.status} ({self.scheduled_at})"
+
 

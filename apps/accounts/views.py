@@ -1238,6 +1238,7 @@ def serialize_user_payload(user):
         'referred_by': user.referred_by.referral_code if user.referred_by else None,
         'is_premium_active': user.is_premium_active,
         'trial_days_left': user.trial_days_left,
+        'custom_code_set': getattr(user, 'custom_code_set', False),
     }
     if user.is_superuser:
         payload['is_superuser'] = True
@@ -1298,6 +1299,7 @@ class ReferralStatsView(APIView):
             'is_premium_active': user.is_premium_active,
             'has_extended_trial': user.has_extended_trial,
             'referred_by_set': user.referred_by_set,
+            'custom_code_set': getattr(user, 'custom_code_set', False),
         }, status=status.HTTP_200_OK)
 
 
@@ -1329,17 +1331,15 @@ class SetReferredByView(APIView):
 
         user.referred_by = referrer
         user.referred_by_set = True
+        # Grant 15 days extended trial to user referred via creator link
+        user.trial_days = max(user.trial_days, 15)
         user.save()
 
-        # Award points to referrer
-        referrer.points += sys_settings.referral_points
-        referrer.save()
-
         print(
-            f"[Referral-1Time] User {user.username} entered referrer code {code}. Referrer {referrer.username} awarded {sys_settings.referral_points} points.")
+            f"[Referral-Linked] User {user.username} linked referrer code {code} ({referrer.username}). Granted 15-day trial.")
 
         return Response({
-            'message': f'Referrer linked successfully! You were referred by {referrer.first_name or referrer.username}.',
+            'message': f'Referrer linked successfully! You were referred by {referrer.first_name or referrer.username} and granted a 15-day trial.',
             'user': serialize_user_payload(user)
         }, status=status.HTTP_200_OK)
 
@@ -1365,6 +1365,111 @@ class ExtendTrialView(APIView):
         return Response({
             'message': f'Trial extended successfully by {sys_settings.extend_days} days!',
             'user': serialize_user_payload(user)
+        }, status=status.HTTP_200_OK)
+
+
+class SetCustomReferralCodeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        code = request.data.get('code', '').strip().upper()
+
+        if not code:
+            return Response({'error': 'Custom referral code is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        import re
+        if not re.match(r'^[A-Z0-9_-]{3,20}$', code):
+            return Response({'error': 'Referral code must be 3-20 uppercase alphanumeric characters or hyphens.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
+        if getattr(user, 'custom_code_set', False):
+            return Response({'error': 'You can only customize your referral code once.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if User.objects.filter(referral_code__iexact=code).exclude(id=user.id).exists():
+            return Response({'error': f'Referral code "{code}" is already taken.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.referral_code = code
+        user.custom_code_set = True
+        user.save(update_fields=['referral_code', 'custom_code_set'])
+
+        return Response({
+            'message': f'Custom referral ID set to {code} successfully!',
+            'referral_code': user.referral_code,
+            'custom_code_set': user.custom_code_set,
+            'user': serialize_user_payload(user)
+        }, status=status.HTTP_200_OK)
+
+
+class GrantCreatorVIPView(APIView):
+    def post(self, request):
+        email = request.data.get('email', '').strip()
+        months = int(request.data.get('months', 3))
+
+        if not email:
+            return Response({'error': 'Email address or username is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        from django.utils import timezone
+        from django.db.models import Q
+
+        target_user = User.objects.filter(Q(email__iexact=email) | Q(username__iexact=email)).first()
+        if not target_user:
+            return Response({'error': f'No user found with email/username "{email}".'}, status=status.HTTP_404_NOT_FOUND)
+
+        target_user.plan = 'pro'
+        target_user.is_creator_vip = True
+        days_to_add = months * 30
+        if target_user.premium_expires_at and target_user.premium_expires_at > timezone.now():
+            target_user.premium_expires_at += timezone.timedelta(days=days_to_add)
+        else:
+            target_user.premium_expires_at = timezone.now() + timezone.timedelta(days=days_to_add)
+
+        target_user.save()
+        auto_enable_subscription_ai_for_user(target_user)
+
+        print(f"[Creator-VIP-Grant] Granted {months} months Creator Pro access to {target_user.username} ({email}). Expires: {target_user.premium_expires_at}")
+
+        return Response({
+            'message': f'Granted {months} months Creator Pro VIP access to {target_user.username} ({email})!',
+            'user': serialize_user_payload(target_user)
+        }, status=status.HTTP_200_OK)
+
+
+class AdminVIPCreatorsListView(APIView):
+    def get(self, request):
+        from django.contrib.auth import get_user_model
+        from django.db.models import Count, Q
+        User = get_user_model()
+
+        creators_qs = User.objects.filter(
+            Q(is_creator_vip=True) | Q(referrals__isnull=False)
+        ).annotate(
+            invite_count=Count('referrals')
+        ).distinct().order_by('-invite_count', '-id')
+
+        creators = []
+        for u in creators_qs:
+            creators.append({
+                'id': u.id,
+                'username': u.username,
+                'email': u.email or u.username,
+                'display_name': u.first_name or u.username,
+                'referral_code': u.referral_code,
+                'invite_count': u.invite_count,
+                'is_creator_vip': u.is_creator_vip,
+                'plan': u.plan,
+                'is_premium_active': u.is_premium_active,
+                'premium_expires_at': u.premium_expires_at.isoformat() if u.premium_expires_at else None,
+                'points': u.points,
+            })
+
+        return Response({
+            'creators': creators,
+            'total_creators': len(creators)
         }, status=status.HTTP_200_OK)
 
 
@@ -1455,6 +1560,13 @@ class RedeemPremiumWithPointsView(APIView):
         from apps.settings.models import SystemSettings
         sys_settings = SystemSettings.get_settings()
 
+        current_redeemed = getattr(user, 'redeemed_months', 0)
+        if current_redeemed >= 5:
+            return Response({
+                'error': 'Redemption limit reached',
+                'details': 'Maximum 5 months points redemption cap reached for creator accounts.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         if user.points < sys_settings.points_to_redeem:
             return Response({
                 'error': 'Insufficient points',
@@ -1462,17 +1574,22 @@ class RedeemPremiumWithPointsView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         user.points -= sys_settings.points_to_redeem
+        user.redeemed_months = current_redeemed + 1
         from django.utils import timezone
         user.plan = 'pro'
-        user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
+        if user.premium_expires_at and user.premium_expires_at > timezone.now():
+            user.premium_expires_at += timezone.timedelta(days=30)
+        else:
+            user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
+
         user.save()
         auto_enable_subscription_ai_for_user(user)
 
         print(
-            f"[Redemption] User {user.username} redeemed Premium with points. Deducted {sys_settings.points_to_redeem} points. Remaining: {user.points}")
+            f"[Redemption] User {user.username} redeemed Premium with points ({user.redeemed_months}/5). Remaining: {user.points}")
 
         return Response({
-            'message': 'Premium plan redeemed successfully with points!',
+            'message': f'Premium plan redeemed successfully ({user.redeemed_months}/5 months cap)!',
             'user': serialize_user_payload(user)
         }, status=status.HTTP_200_OK)
 
@@ -1559,6 +1676,17 @@ class RazorpayVerifyPaymentView(APIView):
             from django.utils import timezone
             user.plan = 'pro'
             user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
+
+            # Reward referrer 20 points on first paid purchase
+            if user.referred_by and not getattr(user, 'referral_paid_reward_given', False):
+                from apps.settings.models import SystemSettings
+                sys_settings = SystemSettings.get_settings()
+                reward_points = sys_settings.referral_points or 20
+                user.referred_by.points += reward_points
+                user.referred_by.save(update_fields=['points'])
+                user.referral_paid_reward_given = True
+                print(f"[Referral-Purchase-Reward] User {user.username} paid. Credited {reward_points} points to referrer {user.referred_by.username}.")
+
             user.save()
             auto_enable_subscription_ai_for_user(user)
 
@@ -1629,3 +1757,97 @@ class RazorpayWebhookView(APIView):
             print(f"[Razorpay-Webhook-Error] Failed to process webhook: {e}")
             # Still return 200/ok so Razorpay doesn't keep retrying if signature was fine, or 400 if bad signature
             return Response({'error': str(e)}, status=400)
+
+
+class InstagramRateLimitStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        account_id = request.query_params.get('account_id')
+        if account_id:
+            account = user.instagram_accounts.filter(id=account_id).first()
+        else:
+            account = user.instagram_accounts.filter(is_active=True).first() or user.instagram_accounts.first()
+
+        if not account:
+            return Response({
+                "account_id": None,
+                "username": None,
+                "hourly_dm_count": 0,
+                "hourly_dm_limit": 200,
+                "hourly_dm_remaining": 200,
+                "daily_dm_count": 0,
+                "daily_dm_limit": 2000,
+                "daily_publish_count": 0,
+                "daily_publish_limit": 100,
+                "rate_limit_utilization_pct": 0,
+                "reset_time_seconds": 3600,
+                "health_status": "SAFE",
+                "anti_block_protection": {
+                    "status": "ACTIVE",
+                    "jitter_delay_range": "1.5s - 3.5s",
+                    "webhook_events": "ENABLED",
+                    "auto_throttle": "ENABLED"
+                }
+            }, status=200)
+
+        from django.core.cache import cache
+        import time
+
+        now_ts = time.time()
+        key = f"ig_dm_timestamps_{account.id}"
+        timestamps = cache.get(key, [])
+
+        # Filter last 1 hour (3600 seconds)
+        one_hour_ago = now_ts - 3600
+        hourly_timestamps = [t for t in timestamps if t > one_hour_ago]
+        hourly_dm_count = len(hourly_timestamps)
+
+        # Filter last 24 hours (86400 seconds)
+        twenty_four_hours_ago = now_ts - 86400
+        daily_timestamps = [t for t in timestamps if t > twenty_four_hours_ago]
+        daily_dm_count = len(daily_timestamps)
+
+        # Meta usage header parsed
+        usage_json = cache.get(f"ig_rate_limit_usage_{account.id}", {})
+        meta_pct = 0
+        reset_seconds = 3600 - int(now_ts % 3600)
+        
+        if "ig_api_usage" in usage_json and len(usage_json["ig_api_usage"]) > 0:
+            item = usage_json["ig_api_usage"][0]
+            meta_pct = item.get("acc_id_util_pct", 0)
+            reset_seconds = item.get("reset_time_duration", reset_seconds)
+        else:
+            # Fallback estimation based on hourly volume
+            meta_pct = min(100, int((hourly_dm_count / 200.0) * 100))
+
+        # Overall safety status
+        if meta_pct >= 90 or hourly_dm_count >= 180:
+            health_status = "WARNING"
+        elif meta_pct >= 60 or hourly_dm_count >= 120:
+            health_status = "MODERATE"
+        else:
+            health_status = "SAFE"
+
+        return Response({
+            "account_id": account.id,
+            "username": account.username,
+            "hourly_dm_count": hourly_dm_count,
+            "hourly_dm_limit": 200,
+            "hourly_dm_remaining": max(0, 200 - hourly_dm_count),
+            "daily_dm_count": daily_dm_count,
+            "daily_dm_limit": 2000,
+            "daily_publish_count": 0,
+            "daily_publish_limit": 100,
+            "rate_limit_utilization_pct": meta_pct,
+            "reset_time_seconds": reset_seconds,
+            "health_status": health_status,
+            "anti_block_protection": {
+                "status": "ACTIVE",
+                "jitter_delay_range": "1.5s - 3.5s",
+                "webhook_events": "ENABLED",
+                "auto_throttle": "ENABLED"
+            }
+        }, status=200)
+

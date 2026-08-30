@@ -18,12 +18,16 @@ from .views import (
     PublicProductDetailView,
     ReferralStatsView,
     SetReferredByView,
+    SetCustomReferralCodeView,
+    GrantCreatorVIPView,
+    AdminVIPCreatorsListView,
     ExtendTrialView,
     GlobalSystemSettingsView,
     RedeemPremiumWithPointsView,
     RazorpayCreateOrderView,
     RazorpayVerifyPaymentView,
-    RazorpayWebhookView
+    RazorpayWebhookView,
+    InstagramRateLimitStatusView
 )
 
 urlpatterns = [
@@ -37,6 +41,7 @@ urlpatterns = [
     path('auth/instagram/remove/', RemoveInstagramAccountView.as_view(), name='instagram-remove'),
     path('auth/instagram/toggle-enabled/', ToggleInstagramEnabledView.as_view(), name='instagram-toggle-enabled'),
     path('auth/instagram/set-active/', SetActiveInstagramAccountView.as_view(), name='instagram-set-active'),
+    path('instagram/rate-limits/', InstagramRateLimitStatusView.as_view(), name='instagram-rate-limits'),
     path('instagram/stories/', InstagramStoriesView.as_view(), name='instagram-stories'),
     path('instagram/media-list/', InstagramMediaListView.as_view(), name='instagram-media-list'),
     path('instagram/proxy-media/', InstagramMediaProxyView.as_view(), name='instagram-media-proxy'),
@@ -47,6 +52,9 @@ urlpatterns = [
     # Referral & Billing Endpoints
     path('referral/stats/', ReferralStatsView.as_view(), name='referral-stats'),
     path('referral/set-referred-by/', SetReferredByView.as_view(), name='referral-set-referred-by'),
+    path('referral/custom-code/', SetCustomReferralCodeView.as_view(), name='referral-custom-code'),
+    path('admin/grant-creator-vip/', GrantCreatorVIPView.as_view(), name='admin-grant-creator-vip'),
+    path('admin/vip-creators/', AdminVIPCreatorsListView.as_view(), name='admin-vip-creators'),
     path('plan/extend-trial/', ExtendTrialView.as_view(), name='plan-extend-trial'),
     path('settings/system/', GlobalSystemSettingsView.as_view(), name='settings-system'),
     path('plan/redeem-points/', RedeemPremiumWithPointsView.as_view(), name='plan-redeem-points'),

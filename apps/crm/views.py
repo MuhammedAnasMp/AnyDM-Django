@@ -2874,3 +2874,333 @@ class IceBreakersView(APIView):
                 return Response({"error": r.text, "status_code": r.status_code}, status=400)
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+
+
+class AnalyticsOverviewView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Sum, Count, Avg
+        from django.utils import timezone
+        import datetime
+        from .models import Order, OrderItem, Customer, CustomerInteraction, Enquiry
+        from apps.automations.models import AutomationRule
+        from apps.products.models import Product
+
+        user = request.user
+        timeframe = request.query_params.get('timeframe', '30d').lower()
+
+        now = timezone.now()
+        start_date = None
+        if timeframe == '7d':
+            start_date = now - datetime.timedelta(days=7)
+        elif timeframe == '30d':
+            start_date = now - datetime.timedelta(days=30)
+        elif timeframe == '90d':
+            start_date = now - datetime.timedelta(days=90)
+        elif timeframe == '1y':
+            start_date = now - datetime.timedelta(days=365)
+        
+        ig_accounts = user.instagram_accounts.all()
+        
+        # Interactions query from CustomerInteraction table
+        interactions_qs = CustomerInteraction.objects.filter(seller_account__in=ig_accounts)
+        if start_date:
+            interactions_qs = interactions_qs.filter(created_at__gte=start_date)
+
+        total_interactions = interactions_qs.count()
+        outbound_count = interactions_qs.filter(direction='OUTBOUND').count()
+
+        # Direct calculation from user interactions
+        open_rate_val = round((outbound_count / total_interactions) * 100, 1) if total_interactions > 0 else 0.0
+
+        # Calculate period bars directly from interactions database records
+        bars = []
+        if total_interactions > 0:
+            max_period_cnt = 1
+            period_counts = []
+            for i in range(9):
+                t_sub_start = now - datetime.timedelta(hours=(9 - i) * 3)
+                t_sub_end = now - datetime.timedelta(hours=(8 - i) * 3)
+                sub_cnt = interactions_qs.filter(created_at__range=(t_sub_start, t_sub_end)).count()
+                period_counts.append(sub_cnt)
+                if sub_cnt > max_period_cnt:
+                    max_period_cnt = sub_cnt
+            
+            for i, cnt in enumerate(period_counts):
+                pct = int((cnt / max_period_cnt) * 100) if max_period_cnt > 0 else 0
+                bars.append({
+                    "height": f"h-[{max(10, pct)}%]",
+                    "showLabel": (cnt == max_period_cnt and cnt > 0),
+                    "val": cnt
+                })
+        else:
+            for i in range(9):
+                bars.append({"height": "h-[5%]", "showLabel": False, "val": 0})
+
+        # Engagement score derived directly from database customers & interactions
+        customers_qs = Customer.objects.filter(owner__in=ig_accounts)
+        unique_customers = customers_qs.count()
+        if total_interactions > 0 and unique_customers > 0:
+            engagement_score = min(100, int((outbound_count / total_interactions * 50) + (unique_customers / (total_interactions + 1) * 50)))
+        elif unique_customers > 0:
+            engagement_score = min(100, unique_customers * 10)
+        else:
+            engagement_score = 0
+
+        # Calculate average response speed from CustomerInteraction table
+        inbound_dms = interactions_qs.filter(direction='INBOUND').order_by('created_at')[:50]
+        response_times = []
+        for in_msg in inbound_dms:
+            next_out = interactions_qs.filter(
+                customer=in_msg.customer,
+                direction='OUTBOUND',
+                created_at__gt=in_msg.created_at
+            ).order_by('created_at').first()
+            if next_out:
+                diff_sec = (next_out.created_at - in_msg.created_at).total_seconds()
+                response_times.append(diff_sec)
+        
+        if response_times:
+            avg_sec = sum(response_times) / len(response_times)
+            if avg_sec < 60:
+                resp_speed_str = f"{int(avg_sec)}s"
+            else:
+                resp_speed_str = f"{round(avg_sec / 60, 1)}m"
+        else:
+            resp_speed_str = "0m"
+
+        # Funnel calculations strictly from user tables (CustomerInteraction, Customer, Enquiry, Order)
+        enquiries_qs = Enquiry.objects.filter(owner__in=ig_accounts)
+        if start_date:
+            enquiries_qs = enquiries_qs.filter(created_at__gte=start_date)
+        enquiry_count = enquiries_qs.count()
+
+        orders_qs = Order.objects.filter(seller=user)
+        if start_date:
+            orders_qs = orders_qs.filter(created_at__gte=start_date)
+        orders_count = orders_qs.count()
+
+        dropoff_1_2 = f"{round((1 - (unique_customers / total_interactions)) * 100, 1)}%" if total_interactions > 0 else "0%"
+        dropoff_2_3 = f"{round((1 - (enquiry_count / (unique_customers or 1))) * 100, 1)}%" if unique_customers > 0 else "0%"
+        cr_final = f"{round((orders_count / (enquiry_count or 1)) * 100, 1)}%" if enquiry_count > 0 else "0%"
+
+        funnel_steps = [
+            {
+                "label": "Impression / Reach",
+                "value": f"{total_interactions:,}",
+                "percent": "100%",
+                "dropoff": dropoff_1_2,
+                "border": "border-primary/40",
+                "delay": 0
+            },
+            {
+                "label": "Engagement",
+                "value": f"{unique_customers:,}",
+                "percent": f"{round((unique_customers / (total_interactions or 1)) * 100, 1)}%",
+                "dropoff": dropoff_2_3,
+                "border": "border-primary/60",
+                "delay": 0.1
+            },
+            {
+                "label": "DM Started",
+                "value": f"{enquiry_count:,}",
+                "percent": f"{round((enquiry_count / (unique_customers or 1)) * 100, 1)}%",
+                "dropoff": "Conversion",
+                "border": "border-primary/80",
+                "delay": 0.2
+            },
+            {
+                "label": "Conversion",
+                "value": f"{orders_count:,}",
+                "percent": cr_final,
+                "dropoff": "Final CR",
+                "border": "border-primary",
+                "delay": 0.3
+            }
+        ]
+
+        # Automation Health directly from AutomationRule table
+        rules = AutomationRule.objects.filter(seller__in=ig_accounts)
+        aut_health = []
+        for rule in rules:
+            rule_trig_count = interactions_qs.filter(message_source='AUTOMATION').count()
+            aut_health.append({
+                "name": rule.name or rule.rule_type.replace("_", " ").title(),
+                "status": "Active" if rule.status == 'active' else "Paused",
+                "stat": f"{rule_trig_count} triggers logged",
+                "ok": rule.status == 'active'
+            })
+
+        # Top Products directly from Product & OrderItem tables
+        products = Product.objects.filter(seller=user)
+        top_products = []
+        for prod in products:
+            item_sales = OrderItem.objects.filter(product=prod, order__seller=user)
+            if start_date:
+                item_sales = item_sales.filter(order__created_at__gte=start_date)
+            qty = item_sales.aggregate(total_qty=Sum('quantity'))['total_qty'] or 0
+            tot_rev = item_sales.aggregate(total_val=Sum('price'))['total_val'] or (qty * (prod.price or 0))
+            top_products.append({
+                "name": prod.title or f"Product #{prod.id}",
+                "sales": f"₹{float(tot_rev):,.2f}",
+                "growth": f"{qty} sold"
+            })
+        
+        # Sort by total sales revenue
+        top_products = sorted(top_products, key=lambda x: x['sales'], reverse=True)[:4]
+
+        # Real Recent Activities from CustomerInteraction table
+        recent_interactions = interactions_qs.order_by('-created_at')[:10]
+        recent_activities = []
+        for act in recent_interactions:
+            agent_name = f"IG Agent ({act.message_source or 'Auto'})" if act.direction == 'OUTBOUND' else f"Lead @{act.customer.username or 'user'}"
+            desc = act.message_text or f"Customer interaction via {act.event_type}"
+            icon = "auto_awesome" if act.message_source == 'AI' else ("forum" if act.direction == 'OUTBOUND' else "person")
+            tags = [f"Event: {act.event_type}", f"Dir: {act.direction}"]
+            recent_activities.append({
+                "agent": agent_name,
+                "time": act.created_at.strftime("%b %d, %H:%M"),
+                "desc": desc,
+                "tags": tags,
+                "icon": icon,
+                "isHighlight": act.event_type == 'DM' and act.direction == 'INBOUND'
+            })
+
+        mrr_30d = float(Order.objects.filter(seller=user, order_status__in=['PAYMENT_RECEIVED', 'CONFIRMED', 'DELIVERED', 'COMPLETED'], created_at__gte=now-datetime.timedelta(days=30)).aggregate(total=Sum('total_amount'))['total'] or 0.0)
+        active_rules_count = AutomationRule.objects.filter(seller__in=ig_accounts, status='active').count()
+
+        kpi_summary = {
+            "active_automations": active_rules_count,
+            "total_dms_sent": outbound_count,
+            "revenue_30d": mrr_30d,
+            "new_leads": unique_customers
+        }
+
+        return Response({
+            "timeframe": timeframe,
+            "open_rate": open_rate_val,
+            "open_rate_change": f"{outbound_count} outbound",
+            "engagement_score": engagement_score,
+            "response_speed": resp_speed_str,
+            "sentiment": "Active",
+            "chart_bars": bars,
+            "funnel_steps": funnel_steps,
+            "automation_health": aut_health,
+            "top_products": top_products,
+            "total_interactions": total_interactions,
+            "total_customers": unique_customers,
+            "total_orders": orders_count,
+            "recent_activities": recent_activities,
+            "kpi_summary": kpi_summary
+        })
+
+
+class RevenueOverviewView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Sum, Count
+        from django.utils import timezone
+        import datetime
+        from .models import Order, OrderItem, Settlement
+
+        user = request.user
+        timeframe = request.query_params.get('timeframe', '30d').lower()
+
+        now = timezone.now()
+        start_date = None
+        if timeframe == '7d':
+            start_date = now - datetime.timedelta(days=7)
+        elif timeframe == '30d':
+            start_date = now - datetime.timedelta(days=30)
+        elif timeframe == '90d':
+            start_date = now - datetime.timedelta(days=90)
+        elif timeframe == '1y':
+            start_date = now - datetime.timedelta(days=365)
+
+        orders_qs = Order.objects.filter(seller=user)
+
+        paid_statuses = ['PAYMENT_RECEIVED', 'CONFIRMED', 'PROCESSING', 'PACKED', 'SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'COMPLETED']
+        paid_orders = orders_qs.filter(order_status__in=paid_statuses)
+
+        if start_date:
+            timeframe_orders = paid_orders.filter(created_at__gte=start_date)
+        else:
+            timeframe_orders = paid_orders
+
+        # Calculate MRR (last 30 days revenue directly from Order table)
+        mrr_start = now - datetime.timedelta(days=30)
+        mrr_orders = paid_orders.filter(created_at__gte=mrr_start)
+        mrr_val = float(mrr_orders.aggregate(total=Sum('total_amount'))['total'] or 0.0)
+
+        # ARR = MRR * 12
+        arr_val = mrr_val * 12
+
+        # AOV directly from Order table
+        timeframe_rev = float(timeframe_orders.aggregate(total=Sum('total_amount'))['total'] or 0.0)
+        timeframe_count = timeframe_orders.count()
+        aov_val = round(timeframe_rev / timeframe_count, 2) if timeframe_count > 0 else 0.0
+
+        # Calculate trajectory points across 12 periods directly from Order table
+        chart_pts = []
+        max_period_rev = 1.0
+        period_revs = []
+        for i in range(12):
+            p_start = now - datetime.timedelta(days=(12 - i) * (30 if timeframe == '1y' else 3))
+            p_end = now - datetime.timedelta(days=(11 - i) * (30 if timeframe == '1y' else 3))
+            period_val = float(paid_orders.filter(created_at__range=(p_start, p_end)).aggregate(total=Sum('total_amount'))['total'] or 0.0)
+            period_revs.append(period_val)
+            if period_val > max_period_rev:
+                max_period_rev = period_val
+
+        for p_val in period_revs:
+            if max_period_rev > 0 and timeframe_rev > 0:
+                pt_height = max(10, int((p_val / max_period_rev) * 100))
+            else:
+                pt_height = 10
+            chart_pts.append(pt_height)
+
+        # Order Status Breakdown from Order table
+        status_counts = orders_qs.values('order_status').annotate(count=Count('id'), total=Sum('total_amount'))
+        status_summary = {item['order_status']: {"count": item['count'], "total": float(item['total'] or 0)} for item in status_counts}
+
+        # Settlements directly from Settlement table
+        settlements_qs = Settlement.objects.filter(seller=user)
+        pending_settlements = settlements_qs.filter(status='PENDING').aggregate(total=Sum('seller_amount'))['total'] or 0
+        paid_settlements = settlements_qs.filter(status='PAID').aggregate(total=Sum('seller_amount'))['total'] or 0
+
+        # Recent orders list directly from Order table
+        recent_list = []
+        for order in orders_qs.order_by('-created_at')[:15]:
+            recent_list.append({
+                "id": order.id,
+                "order_id": order.order_id,
+                "customer_name": order.customer_name,
+                "customer_email": order.customer_email,
+                "total_amount": float(order.total_amount),
+                "order_status": order.order_status,
+                "payment_method": order.payment_method,
+                "payment_status": order.payment_status,
+                "created_at": order.created_at.strftime("%b %d, %Y %H:%M"),
+                "items_count": order.items.count()
+            })
+
+        return Response({
+            "timeframe": timeframe,
+            "mrr": mrr_val,
+            "mrr_growth": f"{mrr_orders.count()} orders (30d)",
+            "arr": arr_val,
+            "aov": aov_val,
+            "total_sales_count": timeframe_count,
+            "total_revenue": timeframe_rev,
+            "chart_points": chart_pts,
+            "status_summary": status_summary,
+            "settlements": {
+                "pending": float(pending_settlements),
+                "paid": float(paid_settlements)
+            },
+            "recent_orders": recent_list
+        })
+
+
