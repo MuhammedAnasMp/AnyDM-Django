@@ -23,6 +23,7 @@ class User(AbstractUser):
     redeemed_months = models.IntegerField(default=0)
     is_creator_vip = models.BooleanField(default=False)
     custom_code_set = models.BooleanField(default=False)
+    pro_purchase_count = models.IntegerField(default=0)
     points = models.IntegerField(default=0)
     plan = models.CharField(max_length=20, default='trial') # 'trial', 'pro', 'expired'
     trial_days = models.IntegerField(default=14)

@@ -967,26 +967,38 @@ class WebsiteSettingsView(APIView):
                         "Error deleting old logo from Cloudinary: %s", e)
 
         settings_obj.store_logo = new_logo
-        settings_obj.store_banner = request.data.get('store_banner', settings_obj.store_banner)
-        settings_obj.store_description = request.data.get('store_description', settings_obj.store_description)
-        settings_obj.contact_email = request.data.get('contact_email', settings_obj.contact_email)
-        settings_obj.contact_phone = request.data.get('contact_phone', settings_obj.contact_phone)
-        settings_obj.business_address = request.data.get('business_address', settings_obj.business_address)
-        settings_obj.shipping_address = request.data.get('shipping_address', settings_obj.shipping_address)
-        
+        settings_obj.store_banner = request.data.get(
+            'store_banner', settings_obj.store_banner)
+        settings_obj.store_description = request.data.get(
+            'store_description', settings_obj.store_description)
+        settings_obj.contact_email = request.data.get(
+            'contact_email', settings_obj.contact_email)
+        settings_obj.contact_phone = request.data.get(
+            'contact_phone', settings_obj.contact_phone)
+        settings_obj.business_address = request.data.get(
+            'business_address', settings_obj.business_address)
+        settings_obj.shipping_address = request.data.get(
+            'shipping_address', settings_obj.shipping_address)
+
         # Enforce COD enabled if KYC is not approved
         if seller_kyc.status != 'APPROVED':
             settings_obj.cod_enabled = True
         else:
-            settings_obj.cod_enabled = request.data.get('cod_enabled', settings_obj.cod_enabled)
-            
-        settings_obj.online_payment_enabled = request.data.get('online_payment_enabled', settings_obj.online_payment_enabled)
+            settings_obj.cod_enabled = request.data.get(
+                'cod_enabled', settings_obj.cod_enabled)
+
+        settings_obj.online_payment_enabled = request.data.get(
+            'online_payment_enabled', settings_obj.online_payment_enabled)
 
         # Allow policy changes by the supplier/admin
-        settings_obj.return_policy = request.data.get('return_policy', settings_obj.return_policy)
-        settings_obj.cancellation_policy = request.data.get('cancellation_policy', settings_obj.cancellation_policy)
-        settings_obj.privacy_policy = request.data.get('privacy_policy', settings_obj.privacy_policy)
-        settings_obj.terms_of_service = request.data.get('terms_of_service', settings_obj.terms_of_service)
+        settings_obj.return_policy = request.data.get(
+            'return_policy', settings_obj.return_policy)
+        settings_obj.cancellation_policy = request.data.get(
+            'cancellation_policy', settings_obj.cancellation_policy)
+        settings_obj.privacy_policy = request.data.get(
+            'privacy_policy', settings_obj.privacy_policy)
+        settings_obj.terms_of_service = request.data.get(
+            'terms_of_service', settings_obj.terms_of_service)
 
         settings_obj.show_related_products = request.data.get(
             'show_related_products', settings_obj.show_related_products)
@@ -1031,7 +1043,8 @@ class PublicStorefrontView(APIView):
 
         # Enforce KYC verification check for online payments
         seller_kyc, _ = SellerKYC.objects.get_or_create(user=account.user)
-        online_payment_enabled = settings_obj.online_payment_enabled and (seller_kyc.status == 'APPROVED')
+        online_payment_enabled = settings_obj.online_payment_enabled and (
+            seller_kyc.status == 'APPROVED')
 
         # Get active products for this supplier
         products = Product.objects.filter(
@@ -1113,7 +1126,8 @@ class PublicProductDetailView(APIView):
 
         # Enforce KYC verification check for online payments
         seller_kyc, _ = SellerKYC.objects.get_or_create(user=account.user)
-        online_payment_enabled = settings_obj.online_payment_enabled and (seller_kyc.status == 'APPROVED')
+        online_payment_enabled = settings_obj.online_payment_enabled and (
+            seller_kyc.status == 'APPROVED')
 
         # Fetch gallery media items
         gallery_data = []
@@ -1380,7 +1394,7 @@ class SetCustomReferralCodeView(APIView):
 
         import re
         if not re.match(r'^[A-Z0-9_-]{3,20}$', code):
-            return Response({'error': 'Referral code must be 3-20 uppercase alphanumeric characters or hyphens.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Referral code must be 3-20 alphanumeric characters or hyphens.'}, status=status.HTTP_400_BAD_REQUEST)
 
         from django.contrib.auth import get_user_model
         User = get_user_model()
@@ -1416,7 +1430,8 @@ class GrantCreatorVIPView(APIView):
         from django.utils import timezone
         from django.db.models import Q
 
-        target_user = User.objects.filter(Q(email__iexact=email) | Q(username__iexact=email)).first()
+        target_user = User.objects.filter(
+            Q(email__iexact=email) | Q(username__iexact=email)).first()
         if not target_user:
             return Response({'error': f'No user found with email/username "{email}".'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -1424,14 +1439,17 @@ class GrantCreatorVIPView(APIView):
         target_user.is_creator_vip = True
         days_to_add = months * 30
         if target_user.premium_expires_at and target_user.premium_expires_at > timezone.now():
-            target_user.premium_expires_at += timezone.timedelta(days=days_to_add)
+            target_user.premium_expires_at += timezone.timedelta(
+                days=days_to_add)
         else:
-            target_user.premium_expires_at = timezone.now() + timezone.timedelta(days=days_to_add)
+            target_user.premium_expires_at = timezone.now(
+            ) + timezone.timedelta(days=days_to_add)
 
         target_user.save()
         auto_enable_subscription_ai_for_user(target_user)
 
-        print(f"[Creator-VIP-Grant] Granted {months} months Creator Pro access to {target_user.username} ({email}). Expires: {target_user.premium_expires_at}")
+        print(
+            f"[Creator-VIP-Grant] Granted {months} months Creator Pro access to {target_user.username} ({email}). Expires: {target_user.premium_expires_at}")
 
         return Response({
             'message': f'Granted {months} months Creator Pro VIP access to {target_user.username} ({email})!',
@@ -1470,6 +1488,112 @@ class AdminVIPCreatorsListView(APIView):
         return Response({
             'creators': creators,
             'total_creators': len(creators)
+        }, status=status.HTTP_200_OK)
+
+
+class AdminUsersAnalyticsView(APIView):
+    def get(self, request):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
+        users_qs = User.objects.all().order_by('-date_joined')
+
+        try:
+            from apps.products.models import Product
+        except Exception:
+            Product = None
+
+        try:
+            from apps.automations.models import AutomationRule
+        except Exception:
+            AutomationRule = None
+
+        users_data = []
+        from django.db import models
+        for u in users_qs:
+            # Connected Instagram Accounts
+            ig_qs = u.instagram_accounts.filter(is_active=True)
+            ig_accounts_count = ig_qs.count()
+            ig_accounts_list = []
+            for acc in ig_qs:
+                ig_accounts_list.append({
+                    'id': acc.id,
+                    'username': acc.username,
+                    'full_name': acc.full_name or acc.username,
+                    'profile_picture_url': acc.profile_picture_url,
+                    'is_active': acc.is_active,
+                    'is_token_expired': acc.is_token_expired,
+                    'connected_at': acc.connected_at.isoformat() if acc.connected_at else None,
+                })
+
+            # Automations
+            automations_count = AutomationRule.objects.filter(
+                seller__user=u).count() if AutomationRule else 0
+
+            # Products Published
+            p_qs = Product.objects.filter(seller=u) if Product else []
+            products_count = p_qs.count() if Product else 0
+            products_list = []
+            if Product:
+                for prod in p_qs[:10]:  # Limit to top 10 for payload efficiency
+                    products_list.append({
+                        'id': prod.id,
+                        'title': prod.title or f"Product #{prod.id}",
+                        'price': float(prod.price) if prod.price else 0.0,
+                        'status': prod.status,
+                        'source_type': prod.source_type,
+                        'created_at': prod.created_at.isoformat() if hasattr(prod, 'created_at') and prod.created_at else None,
+                    })
+
+            # Referred users & Paid conversions
+            referrals_qs = u.referrals.all()
+            referred_count = referrals_qs.count()
+            paid_referred_count = 0
+            referred_users_list = []
+            for ref in referrals_qs:
+                is_active_pro = ref.is_premium_active or ref.plan == 'pro'
+                if is_active_pro:
+                    paid_referred_count += 1
+                referred_users_list.append({
+                    'username': ref.username,
+                    'display_name': ref.first_name or ref.username,
+                    'date_joined': ref.date_joined.isoformat(),
+                    'is_premium_active': is_active_pro,
+                    'plan': ref.plan
+                })
+
+            purchase_count = u.pro_purchase_count if u.pro_purchase_count > 0 else (
+                1 if u.plan == 'pro' else 0)
+
+            users_data.append({
+                'id': u.id,
+                'username': u.username,
+                'email': u.email or u.username,
+                'display_name': u.first_name or u.username,
+                'referral_code': u.referral_code,
+                'is_creator_vip': u.is_creator_vip,
+                'plan': u.plan,
+                'is_premium_active': u.is_premium_active,
+                'trial_days_left': u.trial_days_left,
+                'trial_days': u.trial_days,
+                'premium_expires_at': u.premium_expires_at.isoformat() if u.premium_expires_at else None,
+                'date_joined': u.date_joined.isoformat(),
+                'ig_accounts_count': ig_accounts_count,
+                'ig_accounts': ig_accounts_list,
+                'automations_count': automations_count,
+                'products_count': products_count,
+                'products': products_list,
+                'referred_count': referred_count,
+                'paid_referred_count': paid_referred_count,
+                'referred_users': referred_users_list,
+                'pro_purchase_count': purchase_count,
+                'redeemed_months': u.redeemed_months,
+                'points': u.points,
+            })
+
+        return Response({
+            'users': users_data,
+            'total_users': len(users_data)
         }, status=status.HTTP_200_OK)
 
 
@@ -1538,18 +1662,20 @@ class GlobalSystemSettingsView(APIView):
         }, status=status.HTTP_200_OK)
 
 
-
 def auto_enable_subscription_ai_for_user(user):
     try:
         from apps.crm.models import AIAssistantConfig
         from apps.accounts.models import InstagramAccount
         for account in InstagramAccount.objects.filter(user=user):
-            config, created = AIAssistantConfig.objects.get_or_create(instagram_account=account)
+            config, created = AIAssistantConfig.objects.get_or_create(
+                instagram_account=account)
             config.use_business_token = True
             config.save()
-            print(f"[AI AUTO-SWITCH] Set use_business_token=True for {account.username}")
+            print(
+                f"[AI AUTO-SWITCH] Set use_business_token=True for {account.username}")
     except Exception as e:
-        print(f"[AI AUTO-SWITCH-ERROR] Failed to auto-enable subscription AI: {e}")
+        print(
+            f"[AI AUTO-SWITCH-ERROR] Failed to auto-enable subscription AI: {e}")
 
 
 class RedeemPremiumWithPointsView(APIView):
@@ -1675,6 +1801,8 @@ class RazorpayVerifyPaymentView(APIView):
             # Verification successful - Upgrade plan
             from django.utils import timezone
             user.plan = 'pro'
+            user.pro_purchase_count = getattr(
+                user, 'pro_purchase_count', 0) + 1
             user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
 
             # Reward referrer 20 points on first paid purchase
@@ -1685,7 +1813,8 @@ class RazorpayVerifyPaymentView(APIView):
                 user.referred_by.points += reward_points
                 user.referred_by.save(update_fields=['points'])
                 user.referral_paid_reward_given = True
-                print(f"[Referral-Purchase-Reward] User {user.username} paid. Credited {reward_points} points to referrer {user.referred_by.username}.")
+                print(
+                    f"[Referral-Purchase-Reward] User {user.username} paid. Credited {reward_points} points to referrer {user.referred_by.username}.")
 
             user.save()
             auto_enable_subscription_ai_for_user(user)
@@ -1768,7 +1897,8 @@ class InstagramRateLimitStatusView(APIView):
         if account_id:
             account = user.instagram_accounts.filter(id=account_id).first()
         else:
-            account = user.instagram_accounts.filter(is_active=True).first() or user.instagram_accounts.first()
+            account = user.instagram_accounts.filter(
+                is_active=True).first() or user.instagram_accounts.first()
 
         if not account:
             return Response({
@@ -1813,7 +1943,7 @@ class InstagramRateLimitStatusView(APIView):
         usage_json = cache.get(f"ig_rate_limit_usage_{account.id}", {})
         meta_pct = 0
         reset_seconds = 3600 - int(now_ts % 3600)
-        
+
         if "ig_api_usage" in usage_json and len(usage_json["ig_api_usage"]) > 0:
             item = usage_json["ig_api_usage"][0]
             meta_pct = item.get("acc_id_util_pct", 0)
@@ -1850,4 +1980,3 @@ class InstagramRateLimitStatusView(APIView):
                 "auto_throttle": "ENABLED"
             }
         }, status=200)
-
