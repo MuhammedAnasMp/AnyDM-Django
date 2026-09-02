@@ -266,7 +266,7 @@ class ProductSerializer(serializers.ModelSerializer):
                         post_type=post_type,
                         media_url=post_media_url,
                         cover_url=post_cover_url,
-                        carousel_urls=carousel_urls if post_type == "CAROUSEL" else None,
+                        carousel_urls=carousel_urls if post_type == "CAROUSEL" and carousel_urls else [],
                         caption=custom_caption,
                         share_to_feed=True,
                         scheduled_at=scheduled_at,

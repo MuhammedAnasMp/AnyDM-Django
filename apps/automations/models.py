@@ -588,7 +588,7 @@ class ScheduledPost(models.Model):
     post_type = models.CharField(max_length=20, choices=POST_TYPES, default='REELS')
     media_url = models.URLField(max_length=2000, help_text="Cloudinary media URL (Video or Image)")
     cover_url = models.URLField(max_length=2000, blank=True, null=True, help_text="Optional custom thumbnail cover URL for reels/video")
-    carousel_urls = models.JSONField(default=list, blank=True, help_text="List of media URLs if post_type is CAROUSEL")
+    carousel_urls = models.JSONField(default=list, blank=True, null=True, help_text="List of media URLs if post_type is CAROUSEL")
     caption = models.TextField(blank=True, default="", help_text="Post caption with hashtags")
     share_to_feed = models.BooleanField(default=True, help_text="For reels: whether to share to the main profile feed")
     

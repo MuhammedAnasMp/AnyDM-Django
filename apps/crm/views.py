@@ -2712,7 +2712,6 @@ class PersistentMenuView(APIView):
             "platform": "instagram",
             "persistent_menu": [
                 {
-                    "composer_input_disabled": composer_input_disabled,
                     "locale": "default",
                     "call_to_actions": cta_payloads
                 }
