@@ -123,6 +123,10 @@ def build_visual_data_from_rule(rule):
                 act_data["button_template_buttons_json"] = json.dumps(action.button_template_payload.get('buttons', []))
             if action.quick_reply_payload and action.quick_reply_payload.get('quick_replies'):
                 act_data["quick_replies_titles"] = [qr.get('title') for qr in action.quick_reply_payload.get('quick_replies', []) if qr.get('title')]
+            if action.show_profile_payload:
+                act_data.update(action.show_profile_payload)
+            if action.check_follow_payload:
+                act_data.update(action.check_follow_payload)
 
             nodes.append({
                 "id": a_id,
@@ -415,6 +419,33 @@ class AutomationListCreateView(APIView):
                             "sticker_id": item.get("sticker_id")
                         })
                 action.attachment_payload = structured_attachments
+
+            elif dm_format == 'show_profile':
+                profile_url = a_data.get('profile_url', '')
+                profile_msg = a_data.get('profile_message_text', '')
+                profile_btn = a_data.get('profile_button_text', '')
+                action.show_profile_payload = {
+                    "profile_url": profile_url,
+                    "profile_message_text": profile_msg,
+                    "profile_button_text": profile_btn
+                }
+                if profile_msg:
+                    action.messages = [profile_msg]
+
+            elif dm_format == 'check_follow':
+                action.check_follow_payload = {
+                    "following_format": a_data.get('following_format', 'text'),
+                    "following_text": a_data.get('following_text', ''),
+                    "following_button_text": a_data.get('following_button_text', ''),
+                    "following_buttons_json": a_data.get('following_buttons_json', ''),
+                    "following_profile_url": a_data.get('following_profile_url', ''),
+
+                    "not_following_format": a_data.get('not_following_format', 'button_template'),
+                    "not_following_text": a_data.get('not_following_text', ''),
+                    "not_following_button_text": a_data.get('not_following_button_text', ''),
+                    "not_following_buttons_json": a_data.get('not_following_buttons_json', ''),
+                    "not_following_profile_url": a_data.get('not_following_profile_url', '')
+                }
 
             action.save()
 

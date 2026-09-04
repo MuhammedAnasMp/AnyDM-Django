@@ -197,7 +197,7 @@ def exchange_short_lived_for_long_lived_token(short_lived_token):
             return short_lived_token
     else:
         # Standard professional Facebook Graph Exchange
-        url = "https://graph.facebook.com/v25.0/oauth/access_token"
+        url = "https://graph.facebook.com/v26.0/oauth/access_token"
         params = {
             "grant_type": "fb_exchange_token",
             "client_id": settings.INSTAGRAM_CLIENT_ID,
@@ -248,11 +248,11 @@ class InstagramLoginView(APIView):
         access_token = exchange_short_lived_for_long_lived_token(access_token)
 
         try:
-            # Verify with Instagram using v25.0
+            # Verify with Instagram using v26.0
             # 'id' is the Instagram-Scoped ID (IGSID/SID)
             # 'user_id' is the global Instagram ID (IGID, starts with 17) - requires instagram_graph_user_id permission
             response = requests.get(
-                "https://graph.instagram.com/v25.0/me",
+                "https://graph.instagram.com/v26.0/me",
                 params={
                     'fields': 'id,user_id,username,name,account_type,profile_picture_url',
                     'access_token': access_token
@@ -756,7 +756,7 @@ class InstagramStoriesView(APIView):
 
         is_basic = active_account.access_token.startswith("IGAA")
         host = "graph.instagram.com" if is_basic else "graph.facebook.com"
-        url = f"https://{host}/v25.0/{user_id}/stories"
+        url = f"https://{host}/v26.0/{user_id}/stories"
 
         fields = "id,media_type,media_url,permalink,caption,username,timestamp,thumbnail_url"
 
@@ -804,7 +804,7 @@ class InstagramMediaListView(APIView):
 
         is_basic = active_account.access_token.startswith("IGAA")
         host = "graph.instagram.com" if is_basic else "graph.facebook.com"
-        url = f"https://{host}/v25.0/{user_id}/media"
+        url = f"https://{host}/v26.0/{user_id}/media"
 
         fields = "id,caption,media_type,media_url,permalink,timestamp,like_count,thumbnail_url,children{id,media_type,media_url,permalink,thumbnail_url}"
 
@@ -887,6 +887,7 @@ class WebsiteSettingsView(APIView):
             'store_name': settings_obj.store_name,
             'store_logo': settings_obj.store_logo,
             'store_slug': settings_obj.store_slug,
+            'custom_domain': settings_obj.custom_domain,
             'store_banner': settings_obj.store_banner,
             'store_description': settings_obj.store_description,
             'contact_email': settings_obj.contact_email,
@@ -929,16 +930,34 @@ class WebsiteSettingsView(APIView):
         seller_kyc, _ = SellerKYC.objects.get_or_create(user=user)
 
         # Unique store slug validation
-        new_slug = request.data.get('store_slug', settings_obj.store_slug)
-        if new_slug:
+        new_slug = request.data.get('store_slug', None)
+        if new_slug is not None:
             new_slug = new_slug.strip().lower()
-            # If slug changes, check permission & uniqueness
-            if new_slug != settings_obj.store_slug:
-                if settings_obj.store_slug and not (user.is_superuser or user.is_staff):
-                    return Response({'error': 'Store URL slug cannot be changed without admin permission.'}, status=status.HTTP_400_BAD_REQUEST)
-                if WebsiteSettings.objects.filter(store_slug=new_slug).exclude(id=settings_obj.id).exists():
-                    return Response({'error': 'This store URL slug is already taken.'}, status=status.HTTP_400_BAD_REQUEST)
-                settings_obj.store_slug = new_slug
+            if new_slug:
+                import re
+                new_slug = re.sub(r'[^a-z0-9_-]', '', new_slug.replace(' ', '_'))
+                if new_slug != settings_obj.store_slug:
+                    if WebsiteSettings.objects.filter(store_slug__iexact=new_slug).exclude(id=settings_obj.id).exists() or \
+                       InstagramAccount.objects.filter(username__iexact=new_slug).exclude(id=settings_obj.instagram_account_id).exists():
+                        return Response({'error': 'This store URL / subdomain name is already taken. Please choose another one.'}, status=status.HTTP_400_BAD_REQUEST)
+                    settings_obj.store_slug = new_slug
+            else:
+                settings_obj.store_slug = None
+
+        # Custom domain validation
+        new_domain = request.data.get('custom_domain', None)
+        if new_domain is not None:
+            new_domain = new_domain.strip().lower()
+            if new_domain:
+                import re
+                new_domain = re.sub(r'^https?://', '', new_domain).strip('/')
+                new_domain = re.sub(r'[^a-z0-9.-]', '', new_domain)
+                if new_domain != settings_obj.custom_domain:
+                    if WebsiteSettings.objects.filter(custom_domain__iexact=new_domain).exclude(id=settings_obj.id).exists():
+                        return Response({'error': 'This custom domain is already registered to another store.'}, status=status.HTTP_400_BAD_REQUEST)
+                    settings_obj.custom_domain = new_domain
+            else:
+                settings_obj.custom_domain = None
 
         # Update settings fields
         settings_obj.store_name = request.data.get(
@@ -1025,11 +1044,37 @@ class PublicStorefrontView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, username):
-        try:
-            # Find the active Instagram account by username
-            account = InstagramAccount.objects.get(
-                username__iexact=username, is_active=True)
-        except InstagramAccount.DoesNotExist:
+        from django.db.models import Q
+        import re
+
+        clean_username = username.strip().lower()
+        clean_username = re.sub(r'^https?://', '', clean_username).strip('/')
+        domain_no_www = clean_username.replace('www.', '')
+        domain_with_www = f"www.{domain_no_www}"
+        slug_candidate = re.sub(r'\.(com|in|org|net|co|app|dev|xyz|shop|store)$', '', domain_no_www)
+
+        account = InstagramAccount.objects.filter(username__iexact=clean_username, is_active=True).first()
+        if not account:
+            account = InstagramAccount.objects.filter(username__iexact=slug_candidate, is_active=True).first()
+        if not account:
+            account = InstagramAccount.objects.filter(username__iexact=clean_username).first()
+        if not account:
+            account = InstagramAccount.objects.filter(username__iexact=slug_candidate).first()
+
+        if not account:
+            ws = WebsiteSettings.objects.filter(
+                Q(store_slug__iexact=clean_username) |
+                Q(store_slug__iexact=slug_candidate) |
+                Q(custom_domain__iexact=clean_username) |
+                Q(custom_domain__iexact=domain_no_www) |
+                Q(custom_domain__iexact=domain_with_www) |
+                Q(instagram_account__username__iexact=clean_username) |
+                Q(instagram_account__username__iexact=slug_candidate)
+            ).first()
+            if ws:
+                account = ws.instagram_account
+
+        if not account:
             return Response({'error': 'Supplier not found'}, status=status.HTTP_404_NOT_FOUND)
 
         # Get or create website settings
@@ -1075,6 +1120,7 @@ class PublicStorefrontView(APIView):
                 'store_name': settings_obj.store_name,
                 'store_logo': settings_obj.store_logo,
                 'store_slug': settings_obj.store_slug,
+                'custom_domain': settings_obj.custom_domain,
                 'store_banner': settings_obj.store_banner,
                 'store_description': settings_obj.store_description,
                 'contact_email': settings_obj.contact_email,
@@ -1104,10 +1150,37 @@ class PublicProductDetailView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, username, product_id):
-        try:
-            account = InstagramAccount.objects.get(
-                username__iexact=username, is_active=True)
-        except InstagramAccount.DoesNotExist:
+        from django.db.models import Q
+        import re
+
+        clean_username = username.strip().lower()
+        clean_username = re.sub(r'^https?://', '', clean_username).strip('/')
+        domain_no_www = clean_username.replace('www.', '')
+        domain_with_www = f"www.{domain_no_www}"
+        slug_candidate = re.sub(r'\.(com|in|org|net|co|app|dev|xyz|shop|store)$', '', domain_no_www)
+
+        account = InstagramAccount.objects.filter(username__iexact=clean_username, is_active=True).first()
+        if not account:
+            account = InstagramAccount.objects.filter(username__iexact=slug_candidate, is_active=True).first()
+        if not account:
+            account = InstagramAccount.objects.filter(username__iexact=clean_username).first()
+        if not account:
+            account = InstagramAccount.objects.filter(username__iexact=slug_candidate).first()
+
+        if not account:
+            ws = WebsiteSettings.objects.filter(
+                Q(store_slug__iexact=clean_username) |
+                Q(store_slug__iexact=slug_candidate) |
+                Q(custom_domain__iexact=clean_username) |
+                Q(custom_domain__iexact=domain_no_www) |
+                Q(custom_domain__iexact=domain_with_www) |
+                Q(instagram_account__username__iexact=clean_username) |
+                Q(instagram_account__username__iexact=slug_candidate)
+            ).first()
+            if ws:
+                account = ws.instagram_account
+
+        if not account:
             return Response({'error': 'Supplier not found'}, status=status.HTTP_404_NOT_FOUND)
 
         try:

@@ -24,7 +24,7 @@ def get_url_signature(url):
 def fetch_all_instagram_media(access_token, user_id):
     is_basic = access_token.startswith("IGAA")
     host = "graph.instagram.com" if is_basic else "graph.facebook.com"
-    url = f"https://{host}/v25.0/{user_id}/media"
+    url = f"https://{host}/v26.0/{user_id}/media"
     
     fields = "id,caption,media_type,media_url,permalink,timestamp,thumbnail_url,children{id,media_type,media_url,permalink,thumbnail_url}"
     params = {

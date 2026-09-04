@@ -125,7 +125,7 @@ def send_instagram_dm(account, recipient_id, message_data, dm_format="text", rec
             f"Cannot send DM: Account {account.id} missing access token or Instagram scoped ID.")
         return False, "Missing credentials"
 
-    url = f"https://graph.instagram.com/v25.0/{instagram_scoped_id}/messages"
+    url = f"https://graph.instagram.com/v26.0/{instagram_scoped_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"
@@ -207,6 +207,26 @@ def send_instagram_dm(account, recipient_id, message_data, dm_format="text", rec
                     }
                 }
             }
+    elif dm_format == "show_profile":
+        profile_url = message_data.get("profile_url") or f"https://instagram.com/{account.username}"
+        button_title = (message_data.get("profile_button_text") or "👤 Visit Profile")[:20]
+        header_text = message_data.get("text") or message_data.get("profile_message_text") or f"Check out our Instagram profile:"
+        message_payload = {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "button",
+                    "text": header_text,
+                    "buttons": [
+                        {
+                            "type": "web_url",
+                            "url": profile_url,
+                            "title": button_title
+                        }
+                    ]
+                }
+            }
+        }
     else:
         # Fallback to plain text
         message_payload = {"text": message_data.get("text", str(message_data))}
@@ -264,7 +284,7 @@ def reply_instagram_comment(account, comment_id, message_text):
             f"Cannot reply to comment: Account {account.id} missing access token.")
         return False, "Missing credentials"
 
-    url = f"https://graph.instagram.com/v25.0/{comment_id}/replies"
+    url = f"https://graph.instagram.com/v26.0/{comment_id}/replies"
     params = {"access_token": access_token}
     data = {"message": message_text}
 
@@ -826,9 +846,12 @@ def execute_automation(interaction):
                 logger.error(f"[ENGINE] Failed to sync customer profile for follower gate: {e}", exc_info=True)
 
             is_following = customer.is_following_business
-            if is_following is not True:
+            if is_following is None:
                 logger.info(
-                    f"[ENGINE] Customer {customer.id} does not follow business (is_following: {is_following}). Executing follower gate actions.")
+                    f"[ENGINE] Customer {customer.id} follower status is unknown (is_following: None due to Instagram API consent restriction). Bypassing gate to avoid blocking followers.")
+            elif is_following is False:
+                logger.info(
+                    f"[ENGINE] Customer {customer.id} does not follow business (is_following: False). Executing follower gate actions.")
                 fg_messages = [msg for msg in (
                     rule.follower_gate_messages or []) if str(msg).strip()]
 
@@ -1009,6 +1032,65 @@ def execute_automation(interaction):
                     elif dm_format == "generic_template":
                         msg_data["elements"] = action.generic_template_payload.get(
                             "elements", [])
+                    elif dm_format == "show_profile":
+                        payload = action.show_profile_payload or {}
+                        msg_data = {
+                            "profile_url": payload.get("profile_url") or f"https://instagram.com/{seller_account.username}",
+                            "profile_button_text": payload.get("profile_button_text") or "👤 Visit Profile",
+                            "profile_message_text": payload.get("profile_message_text") or selected_msg or "Check out our Instagram profile:",
+                            "text": payload.get("profile_message_text") or selected_msg or "Check out our Instagram profile:"
+                        }
+                    elif dm_format == "check_follow":
+                        cf_payload = action.check_follow_payload or {}
+                        is_following = customer.is_following_business if customer else False
+                        if is_following is None and customer:
+                            try:
+                                from apps.crm.utils import sync_customer_profile
+                                sync_customer_profile(customer, force=True)
+                                is_following = customer.is_following_business
+                            except Exception as e:
+                                logger.error(f"[ENGINE] Failed to sync customer for check_follow: {e}")
+
+                        if is_following is True:
+                            branch_format = cf_payload.get("following_format", "text")
+                            branch_text = cf_payload.get("following_text") or "Thanks for following us!"
+                            branch_button_text = cf_payload.get("following_button_text") or ""
+                            branch_buttons_json = cf_payload.get("following_buttons_json") or ""
+                            branch_profile_url = cf_payload.get("following_profile_url") or f"https://instagram.com/{seller_account.username}"
+                        else:
+                            branch_format = cf_payload.get("not_following_format", "button_template")
+                            branch_text = cf_payload.get("not_following_text") or "Please follow our Instagram page to access full content!"
+                            branch_button_text = cf_payload.get("not_following_button_text") or "👉 Follow Us"
+                            branch_buttons_json = cf_payload.get("not_following_buttons_json") or ""
+                            branch_profile_url = cf_payload.get("not_following_profile_url") or f"https://instagram.com/{seller_account.username}"
+
+                        dm_format = branch_format
+                        if branch_format == "show_profile":
+                            msg_data = {
+                                "profile_url": branch_profile_url,
+                                "profile_button_text": branch_button_text or "👤 Visit Profile",
+                                "text": branch_text
+                            }
+                        elif branch_format == "button_template":
+                            btns = []
+                            if branch_buttons_json:
+                                try:
+                                    import json
+                                    btns = json.loads(branch_buttons_json) if isinstance(branch_buttons_json, str) else branch_buttons_json
+                                except Exception:
+                                    btns = []
+                            if not btns:
+                                btns = [{
+                                    "type": "web_url",
+                                    "url": branch_profile_url,
+                                    "title": (branch_button_text or "👉 Follow Us")[:20]
+                                }]
+                            msg_data = {
+                                "text": branch_text,
+                                "buttons": btns
+                            }
+                        else:
+                            msg_data = {"text": branch_text}
 
                     action_success, resp = send_instagram_dm(
                         seller_account,

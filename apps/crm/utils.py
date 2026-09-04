@@ -30,12 +30,52 @@ def sync_customer_profile(customer, force=False):
             )
             return customer
 
+        # Cross-reference existing customer records for the same seller by username
+        if customer.username:
+            from apps.crm.models import Customer
+            same_user_cust = Customer.objects.filter(
+                owner=account,
+                username__iexact=customer.username
+            ).exclude(id=customer.id).order_by('-id').first()
+
+            if same_user_cust:
+                changed = False
+                if not customer.instagram_user_id and same_user_cust.instagram_user_id:
+                    customer.instagram_user_id = same_user_cust.instagram_user_id
+                    changed = True
+                if customer.is_following_business is None and same_user_cust.is_following_business is not None:
+                    customer.is_following_business = same_user_cust.is_following_business
+                    changed = True
+                if not customer.full_name and same_user_cust.full_name:
+                    customer.full_name = same_user_cust.full_name
+                    changed = True
+                if not customer.profile_pic and same_user_cust.profile_pic:
+                    customer.profile_pic = same_user_cust.profile_pic
+                    changed = True
+
+                if changed:
+                    customer.save(update_fields=['instagram_user_id', 'is_following_business', 'full_name', 'profile_pic'])
+
         instagram_id = (
             customer.instagram_user_id
             or customer.instagram_scoped_id
         )
 
-        url = f"https://graph.instagram.com/v25.0/{instagram_id}"
+        if not instagram_id:
+            logger.warning(f"No instagram_id found for customer {customer.id}")
+            return customer
+
+        # Prevent syncing self business account profile
+        owner_ids = [
+            str(getattr(account, 'instagram_account_id', '')),
+            str(getattr(account, 'instagram_scoped_id', '')),
+            str(getattr(account, 'instagram_user_id', '')),
+        ]
+        if str(instagram_id) in owner_ids:
+            logger.info(f"Customer {customer.id} ID {instagram_id} matches seller account ID. Skipping self-sync.")
+            return customer
+
+        url = f"https://graph.instagram.com/v26.0/{instagram_id}"
 
         params = {
             "fields": ",".join([
@@ -54,6 +94,32 @@ def sync_customer_profile(customer, force=False):
             params=params,
             timeout=15
         )
+
+        if response.status_code != 200:
+            try:
+                err_body = response.json().get("error", {})
+                err_code = err_body.get("code")
+                err_type = err_body.get("type", "")
+                err_msg = err_body.get("message", "")
+
+                if err_code == 230 or "User consent is required" in err_msg:
+                    logger.info(
+                        f"User consent required for Customer {customer.id} (IGSID: {instagram_id}). "
+                        "Profile access restricted by Instagram until user messages business directly."
+                    )
+                    return customer
+
+                if response.status_code in [401, 403] or err_code == 190 or err_type == "OAuthException":
+                    account.is_token_expired = True
+                    account.save(update_fields=['is_token_expired'])
+                    logger.warning(f"Access token for account {account.id} marked as expired due to OAuth error (code {err_code}).")
+                    return customer
+
+                if err_code == 100:
+                    logger.info(f"Instagram user profile for customer {customer.id} (IGSID: {instagram_id}) not found.")
+                    return customer
+            except Exception:
+                pass
 
         response.raise_for_status()
 

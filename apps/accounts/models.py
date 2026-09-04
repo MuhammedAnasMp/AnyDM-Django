@@ -156,7 +156,7 @@ class InstagramAccount(models.Model): # sellers
             
         try:
             response = requests.get(
-                "https://graph.instagram.com/v25.0/me",
+                "https://graph.instagram.com/v26.0/me",
                 params={
                     'fields': 'profile_picture_url',
                     'access_token': self.access_token
@@ -198,6 +198,7 @@ class WebsiteSettings(models.Model):
     
     # Store settings
     store_slug = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    custom_domain = models.CharField(max_length=255, unique=True, null=True, blank=True)
     store_banner = models.URLField(max_length=2000, blank=True, null=True)
     store_description = models.TextField(blank=True, null=True)
     contact_email = models.CharField(max_length=255, blank=True, null=True)

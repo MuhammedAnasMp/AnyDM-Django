@@ -478,6 +478,13 @@ class InstagramWebhookView(View):
                         if "message" in event:
                             is_echo = event["message"].get("is_echo", False)
 
+                        owner_ids = [
+                            str(owner_id),
+                            str(getattr(owner_account, 'instagram_account_id', '')),
+                            str(getattr(owner_account, 'instagram_user_id', '')),
+                            str(getattr(owner_account, 'instagram_scoped_id', '')),
+                        ]
+
                         if str(sender_id) == str(owner_id) or is_echo:
                             direction = "OUTBOUND"
                             customer_id = recipient_id
@@ -485,13 +492,21 @@ class InstagramWebhookView(View):
                             direction = "INBOUND"
                             customer_id = sender_id
 
-                        if not customer_id:
+                        if not customer_id or str(customer_id) in owner_ids:
                             continue
 
-                        customer, created = Customer.objects.get_or_create(
+                        customer = Customer.objects.filter(
                             owner=owner_account,
                             instagram_scoped_id=customer_id
-                        )
+                        ).first()
+                        created = False
+                        if not customer:
+                            customer = Customer.objects.create(
+                                owner=owner_account,
+                                instagram_scoped_id=customer_id
+                            )
+                            created = True
+
                         if created or not customer.username and not customer.full_name:
                             sync_customer_profile_task.delay(customer.id)
                         # -------------------------
@@ -813,20 +828,42 @@ class InstagramWebhookView(View):
                             except Exception:
                                 pass
 
-                        if str(from_id) == str(owner_id):
+                        owner_ids = [
+                            str(owner_id),
+                            str(getattr(owner_account, 'instagram_account_id', '')),
+                            str(getattr(owner_account, 'instagram_user_id', '')),
+                            str(getattr(owner_account, 'instagram_scoped_id', '')),
+                        ]
+
+                        if str(from_id) in owner_ids:
                             direction = "OUTBOUND"
+                            customer = None
                         else:
                             direction = "INBOUND"
-
-                        customer = None
-                        if from_id:
-                            customer, created = Customer.objects.get_or_create(
-                                owner=owner_account,
-                                instagram_scoped_id=from_id
-                            )
-
-                        if created or not customer.username and not customer.full_name:
-                            sync_customer_profile_task.delay(customer.id)
+                            customer = None
+                            if username:
+                                customer = Customer.objects.filter(
+                                    owner=owner_account,
+                                    username__iexact=username
+                                ).first()
+                            if not customer and from_id:
+                                customer = Customer.objects.filter(
+                                    owner=owner_account,
+                                    instagram_scoped_id=from_id
+                                ).first()
+                            if not customer and from_id:
+                                customer = Customer.objects.create(
+                                    owner=owner_account,
+                                    instagram_scoped_id=from_id,
+                                    username=username
+                                )
+                                sync_customer_profile_task.delay(customer.id)
+                            elif customer:
+                                if username and not customer.username:
+                                    customer.username = username
+                                    customer.save(update_fields=['username'])
+                                if not customer.full_name or customer.is_following_business is None:
+                                    sync_customer_profile_task.delay(customer.id)
 
                         if customer:
                             interaction = CustomerInteraction.objects.create(
@@ -935,7 +972,7 @@ def fetch_and_save_profile_pic_background(customer_id, access_token):
                     needs_update = True
 
             if needs_update:
-                url = f"https://graph.instagram.com/v25.0/{customer.instagram_scoped_id}"
+                url = f"https://graph.instagram.com/v26.0/{customer.instagram_scoped_id}"
                 params = {
                     "fields": "profile_pic,username",
                     "access_token": access_token
@@ -991,7 +1028,7 @@ class InstagramConversationsView(APIView):
         if not ig_user_id or not access_token:
             return Response({'error': 'Instagram account details incomplete'}, status=400)
 
-        url = f"https://graph.instagram.com/v25.0/me/conversations?platform=instagram&fields=participants,updated_time,messages.limit(1){{message}}"
+        url = f"https://graph.instagram.com/v26.0/me/conversations?platform=instagram&fields=participants,updated_time,messages.limit(1){{message}}"
         headers = {
             'Authorization': f'Bearer {access_token}'
         }
@@ -1134,7 +1171,7 @@ class InstagramConversationMessagesView(APIView):
         if not access_token:
             return Response({'error': 'Instagram account details incomplete'}, status=400)
 
-        url = f"https://graph.instagram.com/v25.0/{conversation_id}"
+        url = f"https://graph.instagram.com/v26.0/{conversation_id}"
 
         # Get optional 'after' cursor from query params for pagination
         after_cursor = request.query_params.get('after')
@@ -1411,9 +1448,9 @@ class SendInstagramMessageView(APIView):
         is_basic = active_account.access_token.startswith("IGAA")
         if is_basic:
             ig_user_id = active_account.instagram_scoped_id or active_account.instagram_user_id
-            url = f"https://graph.instagram.com/v25.0/{ig_user_id}/messages"
+            url = f"https://graph.instagram.com/v26.0/{ig_user_id}/messages"
         else:
-            url = "https://graph.facebook.com/v25.0/me/messages"
+            url = "https://graph.facebook.com/v26.0/me/messages"
 
         headers = {
             "Authorization": f"Bearer {active_account.access_token}",
@@ -1669,9 +1706,9 @@ class BroadcastMessageView(APIView):
         is_basic = active_account.access_token.startswith("IGAA")
         if is_basic:
             ig_user_id = active_account.instagram_scoped_id or active_account.instagram_user_id
-            url = f"https://graph.instagram.com/v25.0/{ig_user_id}/messages"
+            url = f"https://graph.instagram.com/v26.0/{ig_user_id}/messages"
         else:
-            url = "https://graph.facebook.com/v25.0/me/messages"
+            url = "https://graph.facebook.com/v26.0/me/messages"
 
         headers = {
             "Authorization": f"Bearer {active_account.access_token}",
@@ -2171,10 +2208,30 @@ class CheckoutView(APIView):
         if not username or not items:
             return Response({'error': 'Store username and items are required.'}, status=400)
 
-        try:
-            account = InstagramAccount.objects.get(
-                username__iexact=username, is_active=True)
-        except InstagramAccount.DoesNotExist:
+        from apps.accounts.models import WebsiteSettings
+        from django.db.models import Q
+        import re
+
+        clean_username = username.strip().lower()
+        clean_username = re.sub(r'^https?://', '', clean_username).strip('/')
+        domain_no_www = clean_username.replace('www.', '')
+        domain_with_www = f"www.{domain_no_www}"
+
+        account = InstagramAccount.objects.filter(username__iexact=clean_username, is_active=True).first()
+        if not account:
+            account = InstagramAccount.objects.filter(username__iexact=clean_username).first()
+
+        if not account:
+            ws = WebsiteSettings.objects.filter(
+                Q(store_slug__iexact=clean_username) |
+                Q(custom_domain__iexact=clean_username) |
+                Q(custom_domain__iexact=domain_no_www) |
+                Q(custom_domain__iexact=domain_with_www)
+            ).first()
+            if ws:
+                account = ws.instagram_account
+
+        if not account:
             return Response({'error': 'Store/Supplier not found.'}, status=404)
 
         store_settings, _ = WebsiteSettings.objects.get_or_create(
@@ -2652,7 +2709,7 @@ class PersistentMenuView(APIView):
             return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
 
         account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
-        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile?fields=persistent_menu"
+        url = f"https://graph.instagram.com/v26.0/{account_id}/messenger_profile?fields=persistent_menu"
         headers = {"Authorization": f"Bearer {account.access_token}"}
         try:
             r = requests.get(url, headers=headers, timeout=10)
@@ -2719,7 +2776,7 @@ class PersistentMenuView(APIView):
         }
 
         account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
-        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile"
+        url = f"https://graph.instagram.com/v26.0/{account_id}/messenger_profile"
         headers = {
             "Authorization": f"Bearer {account.access_token}",
             "Content-Type": "application/json"
@@ -2755,7 +2812,7 @@ class PersistentMenuView(APIView):
             logger.error(f"Error deleting persistent menu automation rules: {e}")
 
         account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
-        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile?fields=['persistent_menu']"
+        url = f"https://graph.instagram.com/v26.0/{account_id}/messenger_profile?fields=['persistent_menu']"
         headers = {"Authorization": f"Bearer {account.access_token}"}
         try:
             r = requests.delete(url, headers=headers, timeout=10)
@@ -2787,7 +2844,7 @@ class IceBreakersView(APIView):
             return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
 
         account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
-        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile?fields=ice_breakers"
+        url = f"https://graph.instagram.com/v26.0/{account_id}/messenger_profile?fields=ice_breakers"
         headers = {"Authorization": f"Bearer {account.access_token}"}
         try:
             r = requests.get(url, headers=headers, timeout=10)
@@ -2828,7 +2885,7 @@ class IceBreakersView(APIView):
         }
 
         account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
-        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile"
+        url = f"https://graph.instagram.com/v26.0/{account_id}/messenger_profile"
         headers = {
             "Authorization": f"Bearer {account.access_token}",
             "Content-Type": "application/json"
@@ -2863,7 +2920,7 @@ class IceBreakersView(APIView):
             logger.error(f"Error deleting icebreaker automation rules: {e}")
 
         account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
-        url = f"https://graph.instagram.com/v25.0/{account_id}/messenger_profile?fields=['ice_breakers']"
+        url = f"https://graph.instagram.com/v26.0/{account_id}/messenger_profile?fields=['ice_breakers']"
         headers = {"Authorization": f"Bearer {account.access_token}"}
         try:
             r = requests.delete(url, headers=headers, timeout=10)

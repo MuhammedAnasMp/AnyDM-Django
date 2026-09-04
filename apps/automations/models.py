@@ -183,6 +183,8 @@ class AutomationAction(models.Model):
         ('generic_template', 'Carousel / Generic Template'),
         ('button_template',  'Button Template'),
         ('attachment',       'Media / Attachment'),
+        ('show_profile',     'Show Profile Link'),
+        ('check_follow',     'Check Follower Status Gate'),
     ]
 
     MESSAGE_MODES = [
@@ -205,6 +207,8 @@ class AutomationAction(models.Model):
     generic_template_payload = models.JSONField(default=dict, blank=True)
     button_template_payload  = models.JSONField(default=dict, blank=True)
     attachment_payload       = models.JSONField(default=list, blank=True)
+    show_profile_payload     = models.JSONField(default=dict, blank=True)
+    check_follow_payload     = models.JSONField(default=dict, blank=True)
 
     # ── Product link (for product_inquiry rules) ──────────────────────────────
     linked_product = models.ForeignKey(
