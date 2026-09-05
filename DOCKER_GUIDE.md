@@ -1,6 +1,6 @@
 # Docker & Service Management Guide
 
-This guide details how to build, run, and manage backend services using Docker Compose.
+This guide details how to build, run, deploy code updates, handle migrations, and manage backend services using Docker Compose.
 
 ---
 
@@ -8,7 +8,7 @@ This guide details how to build, run, and manage backend services using Docker C
 
 | Service Name | Command / Process | Port | Purpose |
 | :--- | :--- | :--- | :--- |
-| **`web`** | `daphne -b 0.0.0.0 -p 8005 core.asgi:application` | `8005` | General Backend API & Dashboard Services |
+| **`web`** | `daphne -b 0.0.0.0 -p 8005 core.asgi:application` | `8005` | General Backend API & Dashboard Services (Runs Migrations) |
 | **`webhook`** | `daphne -b 0.0.0.0 -p 8006 core.asgi:application` | `8006` | Dedicated Webhook Receiver (Instagram/Meta) |
 | **`celery`** | `celery -A core worker --loglevel=info` | - | Background Task Execution Worker |
 | **`celery-beat`** | `celery -A core beat --loglevel=info` | - | Scheduled / Periodic Task Runner |
@@ -19,7 +19,36 @@ This guide details how to build, run, and manage backend services using Docker C
 
 ---
 
-## 🛠️ Common Commands
+## 🔄 Code Deployment Workflow (`git pull` & Migrations)
+
+### Standard Deployment Step:
+```bash
+# 1. Pull latest code updates from Git repository
+git pull origin main
+
+# 2. Rebuild images and start containers (Runs database migrations automatically)
+docker-compose up -d --build
+```
+
+---
+
+## ⚡ Database Migrations
+
+### Automatic Migrations:
+Database migrations are automatically executed by `docker-entrypoint.sh` when the `web` container boots up, enabled via `RUN_MIGRATIONS=true` in `docker-compose.yml`.
+
+### Manual Migration Commands (If needed):
+```bash
+# Generate new migration files
+docker-compose exec web python manage.py makemigrations
+
+# Apply migrations to database
+docker-compose exec web python manage.py migrate
+```
+
+---
+
+## 🛠️ Common Docker Commands
 
 ### 1. Build and Start All Services
 ```bash
@@ -31,7 +60,7 @@ docker-compose up -d --build
   ```bash
   docker-compose restart
   ```
-- **Restart only API and Webhook services**:
+- **Restart API and Webhook services**:
   ```bash
   docker-compose restart web webhook
   ```

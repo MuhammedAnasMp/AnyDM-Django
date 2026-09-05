@@ -11,6 +11,7 @@ services:
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - REDIS_URL=redis://redis:6379/0
+      - RUN_MIGRATIONS=true
     depends_on:
       - db
       - redis
