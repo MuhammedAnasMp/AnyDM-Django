@@ -44,3 +44,8 @@ docker stats
 - `http://127.0.0.1:8005`: Main API Backend (`web`)
 - `http://127.0.0.1:8006`: Webhook Backend (`webhook`)
 - `http://127.0.0.1:8080`: Nginx Unified Reverse Proxy
+
+
+
+
+docker-compose up -d --build
