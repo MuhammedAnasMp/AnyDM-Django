@@ -1,4 +1,20 @@
 services:
+  web-dev:
+    build: .
+    command: daphne -b 0.0.0.0 -p 8004 core.asgi:application
+    volumes:
+      - .:/app
+    ports:
+      - "8004:8004"
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+
   web:
     build: .
     command: gunicorn core.asgi:application -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8005 --workers 4 --threads 2 --backlog 2048
@@ -86,6 +102,7 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
+      - web-dev
       - web
       - webhook
 
@@ -97,6 +114,7 @@ services:
       - /home/anas/.cloudflared:/etc/cloudflared:ro
       - /home/anas/.cloudflared:/home/anas/.cloudflared:ro
     depends_on:
+      - web-dev
       - web
       - webhook
 
