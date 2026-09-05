@@ -1,7 +1,7 @@
 services:
   web:
     build: .
-    command: daphne -b 0.0.0.0 -p 8005 core.asgi:application
+    command: gunicorn core.asgi:application -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8005 --workers 4 --threads 2 --backlog 2048
     volumes:
       - .:/app
     ports:
@@ -18,7 +18,7 @@ services:
 
   webhook:
     build: .
-    command: daphne -b 0.0.0.0 -p 8006 core.asgi:application
+    command: gunicorn core.asgi:application -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8006 --workers 4 --threads 2 --backlog 2048
     volumes:
       - .:/app
     ports:
@@ -34,7 +34,7 @@ services:
 
   celery:
     build: .
-    command: celery -A core worker --loglevel=info
+    command: celery -A core worker --loglevel=info --concurrency=8
     volumes:
       - .:/app
     env_file:
@@ -62,12 +62,14 @@ services:
 
   redis:
     image: redis:7
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"
 
   db:
     image: mysql:8
     restart: unless-stopped
+    command: --innodb_buffer_pool_size=2G --max_connections=250 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     environment:
       MYSQL_DATABASE: anydm_db
       MYSQL_ROOT_PASSWORD: rootpassword

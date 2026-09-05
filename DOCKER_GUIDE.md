@@ -1,98 +1,46 @@
-# Docker & Service Management Guide
+# Docker & Production Performance Tuning Guide
 
-This guide details how to build, run, deploy code updates, handle migrations, and manage backend services using Docker Compose.
+This guide details the production architecture tuned for high-performance hardware (**Intel Core i7-12700 20 threads, 32 GB RAM**).
 
 ---
 
-## 🚀 Services Overview
+## 🚀 Production Services Allocation
 
-| Service Name | Command / Process | Port | Purpose |
+| Service Name | Runner / Workers | Assigned Port / Resources | Purpose |
 | :--- | :--- | :--- | :--- |
-| **`web`** | `daphne -b 0.0.0.0 -p 8005 core.asgi:application` | `8005` | General Backend API & Dashboard Services (Runs Migrations) |
-| **`webhook`** | `daphne -b 0.0.0.0 -p 8006 core.asgi:application` | `8006` | Dedicated Webhook Receiver (Instagram/Meta) |
-| **`celery`** | `celery -A core worker --loglevel=info` | - | Background Task Execution Worker |
-| **`celery-beat`** | `celery -A core beat --loglevel=info` | - | Scheduled / Periodic Task Runner |
-| **`redis`** | `redis:7` | `6379` | In-memory Cache & Celery Message Broker |
-| **`db`** | `mysql:8` | `3306` | Primary MySQL Database |
-| **`nginx`** | `nginx:latest` | `8080` | Reverse Proxy Server |
-| **`cloudflared`** | `cloudflare/cloudflared:latest` | - | Cloudflare Tunnel Client |
+| **`web`** | Gunicorn + 4 Uvicorn Workers | `8005` | General API & Dashboard Requests |
+| **`webhook`** | Gunicorn + 4 Uvicorn Workers | `8006` | High-volume Instagram/Meta Webhook Ingestion |
+| **`celery`** | Celery Worker (`concurrency=8`) | 8 CPU Threads | Parallel Background Job & DM Processing |
+| **`celery-beat`** | Celery Beat Scheduler | 1 Process | Scheduled Periodic Tasks |
+| **`redis`** | Redis 7 (`maxmemory 2GB`) | `6379` | In-memory Cache & High-Speed Queue |
+| **`db`** | MySQL 8 (`innodb_buffer_pool=2G`) | `3306` (max 250 connections) | Primary Relational Storage |
+| **`nginx`** | Nginx Reverse Proxy (Upstream) | `8080` (`80`) | Upstream Load Balancer & Buffer Optimizer |
+| **`cloudflared`** | Cloudflare Tunnel Client | Tunnel | Secure Public Tunneling |
 
 ---
 
-## 🔄 Code Deployment Workflow (`git pull` & Migrations)
+## 🛠️ Commands Cheatsheet
 
-### Standard Deployment Step:
+### 1. Build and Start Production Containers
 ```bash
-# 1. Pull latest code updates from Git repository
-git pull origin main
-
-# 2. Rebuild images and start containers (Runs database migrations automatically)
+cd backend
 docker-compose up -d --build
 ```
 
----
-
-## ⚡ Database Migrations
-
-### Automatic Migrations:
-Database migrations are automatically executed by `docker-entrypoint.sh` when the `web` container boots up, enabled via `RUN_MIGRATIONS=true` in `docker-compose.yml`.
-
-### Manual Migration Commands (If needed):
+### 2. View Live Performance Logs
 ```bash
-# Generate new migration files
-docker-compose exec web python manage.py makemigrations
+docker-compose logs -f web webhook celery
+```
 
-# Apply migrations to database
-docker-compose exec web python manage.py migrate
+### 3. Check Container Health & Memory Usage
+```bash
+docker stats
 ```
 
 ---
 
-## 🛠️ Common Docker Commands
+## 🌐 Production Nginx Routing
 
-### 1. Build and Start All Services
-```bash
-docker-compose up -d --build
-```
-
-### 2. Restart Services
-- **Restart all services**:
-  ```bash
-  docker-compose restart
-  ```
-- **Restart API and Webhook services**:
-  ```bash
-  docker-compose restart web webhook
-  ```
-
-### 3. Check Running Containers
-```bash
-docker-compose ps
-```
-
-### 4. View Real-time Logs
-- **View logs for all containers**:
-  ```bash
-  docker-compose logs -f
-  ```
-- **View logs for API and Webhook services**:
-  ```bash
-  docker-compose logs -f web webhook
-  ```
-
-### 5. Stop Containers
-- **Stop containers (keep data & volumes)**:
-  ```bash
-  docker-compose stop
-  ```
-- **Stop and remove containers**:
-  ```bash
-  docker-compose down
-  ```
-
----
-
-## 🌐 Endpoint Routing Quick Reference
-
-- **General API (`api.locanydm.online`)**: Point Nginx / Proxy to `http://127.0.0.1:8005`
-- **Instagram Webhooks (`wb.locanydm.online`)**: Point Nginx / Proxy to `http://127.0.0.1:8006`
+- `http://127.0.0.1:8005`: Main API Backend (`web`)
+- `http://127.0.0.1:8006`: Webhook Backend (`webhook`)
+- `http://127.0.0.1:8080`: Nginx Unified Reverse Proxy
