@@ -38,9 +38,10 @@ class SubscriptionMiddleware:
 
             path = request.path
             
-            # Protect CRM and Products API endpoints
-            is_crm = path.startswith('/api/crm/') and 'webhooks/instagram/' not in path
-            is_products = path.startswith('/api/products/') and 'resolve/' not in path
+            # Protect CRM and Products API endpoints (Exempt webhooks, public endpoints, and resolve routes)
+            is_exempt = 'webhooks' in path or '/public/' in path or 'resolve/' in path
+            is_crm = path.startswith('/api/crm/') and not is_exempt
+            is_products = path.startswith('/api/products/') and not is_exempt
             
             if is_crm or is_products:
                 if not request.user.is_premium_active:

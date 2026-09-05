@@ -1326,6 +1326,9 @@ def serialize_user_payload(user):
         'is_premium_active': user.is_premium_active,
         'trial_days_left': user.trial_days_left,
         'custom_code_set': getattr(user, 'custom_code_set', False),
+        'is_creator_vip': user.is_creator_vip,
+        'creator_reward_type': user.creator_reward_type,
+        'creator_commission_percent': float(user.creator_commission_percent) if user.creator_commission_percent else 10.0,
     }
     if user.is_superuser:
         payload['is_superuser'] = True
@@ -1510,6 +1513,7 @@ class GrantCreatorVIPView(APIView):
 
         target_user.plan = 'pro'
         target_user.is_creator_vip = True
+        target_user.creator_reward_type = 'vip'
         days_to_add = months * 30
         if target_user.premium_expires_at and target_user.premium_expires_at > timezone.now():
             target_user.premium_expires_at += timezone.timedelta(
@@ -1530,16 +1534,181 @@ class GrantCreatorVIPView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+class SetCreatorRewardTypeView(APIView):
+    """Admin endpoint to set a creator's reward type (VIP or Commission) and commission %."""
+    def post(self, request):
+        email = request.data.get('email', '').strip()
+        reward_type = request.data.get('reward_type', '').strip()
+        commission_percent = request.data.get('commission_percent', 10)
+
+        if not email:
+            return Response({'error': 'Email or username is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if reward_type not in ('vip', 'commission'):
+            return Response({'error': 'reward_type must be "vip" or "commission".'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.contrib.auth import get_user_model
+        from django.db.models import Q
+        from django.utils import timezone
+        from decimal import Decimal
+        User = get_user_model()
+
+        target_user = User.objects.filter(
+            Q(email__iexact=email) | Q(username__iexact=email)).first()
+        if not target_user:
+            return Response({'error': f'No user found with email/username "{email}".'}, status=status.HTTP_404_NOT_FOUND)
+
+        target_user.is_creator_vip = True
+        target_user.creator_reward_type = reward_type
+
+        if reward_type == 'commission':
+            try:
+                pct = Decimal(str(commission_percent))
+                if pct < 1 or pct > 100:
+                    return Response({'error': 'Commission percent must be between 1 and 100.'}, status=status.HTTP_400_BAD_REQUEST)
+                target_user.creator_commission_percent = pct
+            except Exception:
+                return Response({'error': 'Invalid commission percent value.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            target_user.save()
+            auto_enable_subscription_ai_for_user(target_user)
+
+            print(f"[Creator-Commission-Set] Set {target_user.username} to commission mode at {commission_percent}%.")
+            return Response({
+                'message': f'Set {target_user.username} to Commission mode at {commission_percent}%.',
+                'user': serialize_user_payload(target_user)
+            }, status=status.HTTP_200_OK)
+
+        elif reward_type == 'vip':
+            months = int(request.data.get('months', 3))
+            target_user.plan = 'pro'
+            days_to_add = months * 30
+            if target_user.premium_expires_at and target_user.premium_expires_at > timezone.now():
+                target_user.premium_expires_at += timezone.timedelta(days=days_to_add)
+            else:
+                target_user.premium_expires_at = timezone.now() + timezone.timedelta(days=days_to_add)
+
+            target_user.save()
+            auto_enable_subscription_ai_for_user(target_user)
+
+            print(f"[Creator-VIP-Set] Set {target_user.username} to VIP mode with {months} months Pro.")
+            return Response({
+                'message': f'Set {target_user.username} to VIP mode with {months} months Creator Pro!',
+                'user': serialize_user_payload(target_user)
+            }, status=status.HTTP_200_OK)
+
+
+class CreatorEarningsView(APIView):
+    """Creator endpoint to view their commission earnings dashboard."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if not user.is_creator_vip:
+            return Response({'error': 'You are not a creator.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from apps.accounts.models import CreatorCommission
+        from django.db.models import Sum, Count, Q
+        from django.contrib.auth import get_user_model
+        from decimal import Decimal
+        User = get_user_model()
+
+        commissions_qs = CreatorCommission.objects.filter(creator=user)
+        total_earned = commissions_qs.aggregate(total=Sum('commission_amount'))['total'] or Decimal('0')
+        total_pending = commissions_qs.filter(status='pending').aggregate(total=Sum('commission_amount'))['total'] or Decimal('0')
+        total_paid = commissions_qs.filter(status='paid').aggregate(total=Sum('commission_amount'))['total'] or Decimal('0')
+
+        commissions_list = []
+        for c in commissions_qs[:50]:
+            commissions_list.append({
+                'id': c.id,
+                'referred_user': c.referred_user.first_name or c.referred_user.username,
+                'referred_username': c.referred_user.username,
+                'payment_amount': float(c.payment_amount),
+                'commission_percent': float(c.commission_percent),
+                'commission_amount': float(c.commission_amount),
+                'status': c.status,
+                'created_at': c.created_at.isoformat(),
+            })
+
+        # Referral stats
+        total_referrals = User.objects.filter(referred_by=user).count()
+        paid_referrals = User.objects.filter(referred_by=user, referral_paid_reward_given=True).count()
+
+        return Response({
+            'reward_type': user.creator_reward_type,
+            'commission_percent': float(user.creator_commission_percent) if user.creator_commission_percent else 10.0,
+            'total_earned': float(total_earned),
+            'total_pending': float(total_pending),
+            'total_paid': float(total_paid),
+            'commissions': commissions_list,
+            'total_referrals': total_referrals,
+            'paid_referrals': paid_referrals,
+        }, status=status.HTTP_200_OK)
+
+
+class AdminSettleCreatorCommissionView(APIView):
+    """Admin endpoint to settle pending commissions for a creator after manual bank disbursement."""
+    def post(self, request):
+        user_id = request.data.get('user_id')
+        email = request.data.get('email', '').strip()
+
+        from django.contrib.auth import get_user_model
+        from django.db.models import Q, Sum
+        from apps.accounts.models import CreatorCommission
+        from decimal import Decimal
+        User = get_user_model()
+
+        target_user = None
+        if user_id:
+            target_user = User.objects.filter(id=user_id).first()
+        elif email:
+            target_user = User.objects.filter(Q(email__iexact=email) | Q(username__iexact=email)).first()
+
+        if not target_user:
+            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        pending_qs = CreatorCommission.objects.filter(creator=target_user, status='pending')
+        settled_count = pending_qs.count()
+        total_settled = pending_qs.aggregate(total=Sum('commission_amount'))['total'] or Decimal('0')
+
+        if settled_count == 0:
+            return Response({'error': f'No pending commissions to settle for {target_user.username}.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Mark all pending commissions as paid/settled
+        pending_qs.update(status='paid')
+
+        # Recalculate totals
+        all_commissions = CreatorCommission.objects.filter(creator=target_user)
+        total_earned = all_commissions.aggregate(total=Sum('commission_amount'))['total'] or Decimal('0')
+        total_paid = all_commissions.filter(status='paid').aggregate(total=Sum('commission_amount'))['total'] or Decimal('0')
+        total_pending = all_commissions.filter(status='pending').aggregate(total=Sum('commission_amount'))['total'] or Decimal('0')
+
+        print(f"[Commission-Payout-Settled] Admin settled {settled_count} commission(s) totaling ₹{total_settled} for {target_user.username}.")
+
+        return Response({
+            'message': f'Successfully settled {settled_count} commission(s) totaling ₹{float(total_settled):,.2f} for {target_user.username}!',
+            'total_settled_now': float(total_settled),
+            'total_earned': float(total_earned),
+            'total_pending': float(total_pending),
+            'total_paid': float(total_paid),
+            'settled_count': settled_count,
+        }, status=status.HTTP_200_OK)
+
+
 class AdminVIPCreatorsListView(APIView):
     def get(self, request):
         from django.contrib.auth import get_user_model
-        from django.db.models import Count, Q
+        from django.db.models import Count, Q, Sum, DecimalField
+        from django.db.models.functions import Coalesce
+        from decimal import Decimal
         User = get_user_model()
 
         creators_qs = User.objects.filter(
             Q(is_creator_vip=True) | Q(referrals__isnull=False)
         ).annotate(
-            invite_count=Count('referrals')
+            invite_count=Count('referrals'),
+            total_commission_earned=Coalesce(Sum('commissions_earned__commission_amount'), Decimal('0'), output_field=DecimalField()),
+            total_commission_pending=Coalesce(Sum('commissions_earned__commission_amount', filter=Q(commissions_earned__status='pending')), Decimal('0'), output_field=DecimalField()),
         ).distinct().order_by('-invite_count', '-id')
 
         creators = []
@@ -1552,6 +1721,10 @@ class AdminVIPCreatorsListView(APIView):
                 'referral_code': u.referral_code,
                 'invite_count': u.invite_count,
                 'is_creator_vip': u.is_creator_vip,
+                'creator_reward_type': u.creator_reward_type,
+                'creator_commission_percent': float(u.creator_commission_percent) if u.creator_commission_percent else 10.0,
+                'total_commission_earned': float(u.total_commission_earned),
+                'total_commission_pending': float(u.total_commission_pending),
                 'plan': u.plan,
                 'is_premium_active': u.is_premium_active,
                 'premium_expires_at': u.premium_expires_at.isoformat() if u.premium_expires_at else None,
@@ -1638,6 +1811,25 @@ class AdminUsersAnalyticsView(APIView):
             purchase_count = u.pro_purchase_count if u.pro_purchase_count > 0 else (
                 1 if u.plan == 'pro' else 0)
 
+            # Commission totals (if creator)
+            comm_qs = u.commissions_earned.all()
+            comm_total_earned = float(comm_qs.aggregate(total=models.Sum('commission_amount'))['total'] or 0)
+            comm_total_pending = float(comm_qs.filter(status='pending').aggregate(total=models.Sum('commission_amount'))['total'] or 0)
+            comm_total_paid = float(comm_qs.filter(status='paid').aggregate(total=models.Sum('commission_amount'))['total'] or 0)
+
+            # KYC / Bank Details
+            kyc_obj = getattr(u, 'kyc', None)
+            kyc_data = None
+            if kyc_obj:
+                kyc_data = {
+                    'full_name': kyc_obj.full_name,
+                    'bank_name': kyc_obj.bank_name,
+                    'bank_account_number': kyc_obj.bank_account_number,
+                    'bank_ifsc': kyc_obj.bank_ifsc,
+                    'status': kyc_obj.status,
+                    'is_card_verified': kyc_obj.is_card_verified,
+                }
+
             users_data.append({
                 'id': u.id,
                 'username': u.username,
@@ -1645,6 +1837,12 @@ class AdminUsersAnalyticsView(APIView):
                 'display_name': u.first_name or u.username,
                 'referral_code': u.referral_code,
                 'is_creator_vip': u.is_creator_vip,
+                'creator_reward_type': u.creator_reward_type,
+                'creator_commission_percent': float(u.creator_commission_percent) if u.creator_commission_percent else 10.0,
+                'commission_total_earned': comm_total_earned,
+                'commission_total_pending': comm_total_pending,
+                'commission_total_paid': comm_total_paid,
+                'kyc': kyc_data,
                 'plan': u.plan,
                 'is_premium_active': u.is_premium_active,
                 'trial_days_left': u.trial_days_left,
@@ -1889,6 +2087,27 @@ class RazorpayVerifyPaymentView(APIView):
                 print(
                     f"[Referral-Purchase-Reward] User {user.username} paid. Credited {reward_points} points to referrer {user.referred_by.username}.")
 
+                # Creator Commission: record commission if referrer is in commission mode
+                referrer = user.referred_by
+                if referrer.is_creator_vip and referrer.creator_reward_type == 'commission':
+                    from decimal import Decimal
+                    from apps.accounts.models import CreatorCommission
+                    try:
+                        plan_price = Decimal(str(sys_settings.premium_plan_price))
+                    except Exception:
+                        plan_price = Decimal('499.00')
+                    pct = referrer.creator_commission_percent or Decimal('10.00')
+                    commission_amt = (plan_price * pct) / Decimal('100')
+                    CreatorCommission.objects.create(
+                        creator=referrer,
+                        referred_user=user,
+                        payment_amount=plan_price,
+                        commission_percent=pct,
+                        commission_amount=commission_amt,
+                    )
+                    print(
+                        f"[Creator-Commission] {referrer.username} earned {commission_amt} ({pct}% of {plan_price}) from {user.username}'s first purchase.")
+
             user.save()
             auto_enable_subscription_ai_for_user(user)
 
@@ -1947,7 +2166,33 @@ class RazorpayWebhookView(APIView):
                     if user:
                         from django.utils import timezone
                         user.plan = 'pro'
+                        user.pro_purchase_count = getattr(user, 'pro_purchase_count', 0) + 1
                         user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
+
+                        # Creator Commission via webhook (first payment only)
+                        if user.referred_by and not getattr(user, 'referral_paid_reward_given', False):
+                            referrer = user.referred_by
+                            if referrer.is_creator_vip and referrer.creator_reward_type == 'commission':
+                                from decimal import Decimal
+                                from apps.accounts.models import CreatorCommission
+                                from apps.settings.models import SystemSettings
+                                sys_settings = SystemSettings.get_settings()
+                                try:
+                                    plan_price = Decimal(str(sys_settings.premium_plan_price))
+                                except Exception:
+                                    plan_price = Decimal('499.00')
+                                pct = referrer.creator_commission_percent or Decimal('10.00')
+                                commission_amt = (plan_price * pct) / Decimal('100')
+                                CreatorCommission.objects.create(
+                                    creator=referrer,
+                                    referred_user=user,
+                                    payment_amount=plan_price,
+                                    commission_percent=pct,
+                                    commission_amount=commission_amt,
+                                )
+                                print(
+                                    f"[Creator-Commission-Webhook] {referrer.username} earned {commission_amt} from {user.username}'s first purchase.")
+
                         user.save()
                         auto_enable_subscription_ai_for_user(user)
                         print(

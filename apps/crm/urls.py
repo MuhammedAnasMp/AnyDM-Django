@@ -35,6 +35,7 @@ urlpatterns = [
     path("admin/kyc/", AdminKYCListView.as_view(), name="admin-kyc-list"),
     path("store/checkout/confirm-payment/", ConfirmPaymentView.as_view(), name="store-checkout-confirm-payment"),
     path("webhooks/instagram/", InstagramWebhookView.as_view(), name="instagram-webhook"),
+    path("webhooks/instagram", InstagramWebhookView.as_view(), name="instagram-webhook-no-slash"),
     path("conversations/", InstagramConversationsView.as_view(), name="instagram-conversations"),
     path("conversations/<str:conversation_id>/messages/", InstagramConversationMessagesView.as_view(), name="instagram-conversation-messages"),
     path("conversations/<str:conversation_id>/send/", SendInstagramMessageView.as_view(), name="send-instagram-message"),

@@ -185,6 +185,7 @@ class AutomationAction(models.Model):
         ('attachment',       'Media / Attachment'),
         ('show_profile',     'Show Profile Link'),
         ('check_follow',     'Check Follower Status Gate'),
+        ('loop_back',        'Loop Back to Previous DM'),
     ]
 
     MESSAGE_MODES = [
@@ -209,6 +210,7 @@ class AutomationAction(models.Model):
     attachment_payload       = models.JSONField(default=list, blank=True)
     show_profile_payload     = models.JSONField(default=dict, blank=True)
     check_follow_payload     = models.JSONField(default=dict, blank=True)
+    loop_target_id           = models.CharField(max_length=255, blank=True, null=True, help_text="Target action/node ID to loop back to")
 
     # ── Product link (for product_inquiry rules) ──────────────────────────────
     linked_product = models.ForeignKey(
@@ -236,6 +238,9 @@ class AutomationAction(models.Model):
     # ── Payload validation ────────────────────────────────────────────────────
     def clean(self):
         if self.action_type != 'send_dm':
+            return
+
+        if self.dm_format == 'loop_back':
             return
 
         if self.dm_format == 'quick_reply':
@@ -294,7 +299,7 @@ class AutomationAction(models.Model):
                         {'attachment_payload': 'Each attachment must be a dict with a "type" field.'}
                     )
 
-        if self.dm_format != 'attachment':
+        if self.dm_format not in ('attachment', 'loop_back'):
             if not self.messages or not isinstance(self.messages, list):
                 raise ValidationError({'messages': 'At least one message string is required.'})
 

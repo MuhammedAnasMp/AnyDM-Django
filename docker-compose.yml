@@ -69,14 +69,16 @@ services:
     depends_on:
       - web
 
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    restart: unless-stopped
-    command: tunnel --protocol http2 --config /etc/cloudflared/config.yml run
-    volumes:
-      - /home/anas/.cloudflared:/etc/cloudflared:ro
-    depends_on:
-      - web
+
+    cloudflared:
+      image: cloudflare/cloudflared:latest
+      restart: unless-stopped
+      command: tunnel --protocol http2 --config /etc/cloudflared/config.yml run
+      volumes:
+        - /home/anas/.cloudflared:/etc/cloudflared:ro
+      depends_on:
+        - web
+
 
 volumes:
   mysql_data:

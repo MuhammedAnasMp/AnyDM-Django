@@ -22,6 +22,14 @@ class User(AbstractUser):
     referral_paid_reward_given = models.BooleanField(default=False)
     redeemed_months = models.IntegerField(default=0)
     is_creator_vip = models.BooleanField(default=False)
+    creator_reward_type = models.CharField(
+        max_length=20,
+        choices=[('vip', 'VIP Free Pro'), ('commission', 'Commission Earnings')],
+        null=True, blank=True, default=None
+    )
+    creator_commission_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=10.00
+    )
     custom_code_set = models.BooleanField(default=False)
     pro_purchase_count = models.IntegerField(default=0)
     points = models.IntegerField(default=0)
@@ -260,6 +268,22 @@ class SellerKYC(models.Model):
     def __str__(self):
         return f"KYC for {self.user.username} - {self.status}"
 
+
+
+class CreatorCommission(models.Model):
+    creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='commissions_earned')
+    referred_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='commission_generated')
+    payment_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    commission_percent = models.DecimalField(max_digits=5, decimal_places=2)
+    commission_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=10, default='pending', choices=[('pending', 'Pending'), ('paid', 'Paid')])
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Commission: {self.creator.username} earned {self.commission_amount} from {self.referred_user.username}"
 
 
 # SystemSettings has been moved to apps.settings.models

@@ -15,14 +15,185 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def find_button_title_in_node_data(data, target_payload):
+    if not target_payload or not isinstance(data, dict):
+        return None
+    # Check button_template_buttons_json
+    btns_json = data.get('button_template_buttons_json')
+    if btns_json:
+        try:
+            btns = json.loads(btns_json) if isinstance(btns_json, str) else btns_json
+            if isinstance(btns, list):
+                for b in btns:
+                    if isinstance(b, dict) and b.get('payload') == target_payload:
+                        return b.get('title') or target_payload
+        except Exception:
+            pass
+    # Check buttons
+    btns = data.get('buttons')
+    if isinstance(btns, list):
+        for b in btns:
+            if isinstance(b, dict) and b.get('payload') == target_payload:
+                return b.get('title') or target_payload
+    # Check not_following_buttons_json / following_buttons_json
+    for key in ['not_following_buttons_json', 'following_buttons_json']:
+        val = data.get(key)
+        if val:
+            try:
+                btns = json.loads(val) if isinstance(val, str) else val
+                if isinstance(btns, list):
+                    for b in btns:
+                        if isinstance(b, dict) and b.get('payload') == target_payload:
+                            return b.get('title') or target_payload
+            except Exception:
+                pass
+    # Check generic_template_elements_json
+    elems_json = data.get('generic_template_elements_json')
+    if elems_json:
+        try:
+            elems = json.loads(elems_json) if isinstance(elems_json, str) else elems_json
+            if isinstance(elems, list):
+                for el in elems:
+                    for b in el.get('buttons', []):
+                        if isinstance(b, dict) and b.get('payload') == target_payload:
+                            return b.get('title') or target_payload
+        except Exception:
+            pass
+    # Check quick_replies_titles or quick_replies
+    qrs = data.get('quick_replies_titles') or data.get('quick_replies')
+    if isinstance(qrs, list):
+        for qr in qrs:
+            if isinstance(qr, str) and qr == target_payload:
+                return qr
+            elif isinstance(qr, dict) and (qr.get('payload') == target_payload or qr.get('title') == target_payload):
+                return qr.get('title') or target_payload
+    return None
+
+
+def find_button_title_in_action(action, target_payload):
+    if not target_payload:
+        return None
+    if action.button_template_payload and action.button_template_payload.get('buttons'):
+        for b in action.button_template_payload.get('buttons', []):
+            if isinstance(b, dict) and b.get('payload') == target_payload:
+                return b.get('title') or target_payload
+    if action.check_follow_payload:
+        for key in ['following_buttons_json', 'not_following_buttons_json']:
+            raw = action.check_follow_payload.get(key)
+            if raw:
+                try:
+                    btns = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(btns, list):
+                        for b in btns:
+                            if isinstance(b, dict) and b.get('payload') == target_payload:
+                                return b.get('title') or target_payload
+                except Exception:
+                    pass
+    if action.generic_template_payload and action.generic_template_payload.get('elements'):
+        for el in action.generic_template_payload.get('elements', []):
+            for b in el.get('buttons', []):
+                if isinstance(b, dict) and b.get('payload') == target_payload:
+                    return b.get('title') or target_payload
+    if action.quick_reply_payload and action.quick_reply_payload.get('quick_replies'):
+        for qr in action.quick_reply_payload.get('quick_replies', []):
+            if isinstance(qr, dict) and (qr.get('payload') == target_payload or qr.get('title') == target_payload):
+                return qr.get('title') or target_payload
+    return None
+
+
+def is_loop_return_edge(e):
+    if not isinstance(e, dict):
+        return False
+    e_id = str(e.get('id', ''))
+    e_lbl = str(e.get('label', ''))
+    return e_id.startswith('edge-loop') or 'edge-loop-' in e_id or e_lbl == '🔄 Loop Back'
+
+
 def build_visual_data_from_rule(rule):
     """
     Constructs React Flow visual_data (nodes and edges) from an AutomationRule and its related AutomationActions.
-    Ensures any rule (e.g. auto-created during product publishing) loads seamlessly in the visual builder.
+    Ensures any rule (including loop back branches, postbacks, and auto-created rules) loads seamlessly in the visual builder with all required edges.
     """
     if rule.visual_data and isinstance(rule.visual_data, dict):
         nodes = rule.visual_data.get('nodes', [])
         if isinstance(nodes, list) and len(nodes) > 0:
+            edges = list(rule.visual_data.get('edges', []))
+            modified = False
+
+            # Clean up any stray parent_event on root action nodes
+            action_node_ids = {n.get('id') for n in nodes if n.get('type') == 'action'}
+            child_node_ids = set()
+            for e in edges:
+                src = e.get('source')
+                tgt = e.get('target')
+                if tgt in action_node_ids:
+                    if src in action_node_ids and not is_loop_return_edge(e):
+                        child_node_ids.add(tgt)
+                    elif '-cf-fork' in str(src) or 'fork' in str(src):
+                        child_node_ids.add(tgt)
+
+            for node in nodes:
+                if node.get('type') == 'action' and node.get('id') not in child_node_ids:
+                    if node.get('data', {}).get('parent_event'):
+                        node['data']['parent_event'] = None
+                        modified = True
+
+            for node in nodes:
+                n_id = node.get('id')
+                n_data = node.get('data', {}) if isinstance(node.get('data'), dict) else {}
+                parent_event = n_data.get('parent_event')
+                dm_format = n_data.get('dm_format')
+                loop_target_id = n_data.get('loop_target_id')
+
+                # 1. Ensure incoming forward execution edge exists for branch nodes
+                if parent_event:
+                    has_forward_edge = any(
+                        e.get('target') == n_id and not (
+                            'loop' in str(e.get('id', '')).lower() or 'loop' in str(e.get('label', '')).lower()
+                        )
+                        for e in edges
+                    )
+                    if not has_forward_edge:
+                        for pnode in nodes:
+                            p_id = pnode.get('id')
+                            p_data = pnode.get('data', {}) if isinstance(pnode.get('data'), dict) else {}
+                            btn_title = find_button_title_in_node_data(p_data, parent_event)
+                            if btn_title:
+                                edges.append({
+                                    "id": f"edge-reply-{p_id}-{n_id}",
+                                    "source": p_id,
+                                    "target": n_id,
+                                    "label": btn_title or n_data.get('parent_label') or parent_event
+                                })
+                                modified = True
+                                break
+
+                # 2. Ensure loop back return edge exists
+                if dm_format == 'loop_back' and loop_target_id:
+                    has_loop_edge = any(
+                        e.get('source') == n_id and e.get('target') == loop_target_id and (
+                            'loop' in str(e.get('id', '')).lower() or 'loop' in str(e.get('label', '')).lower()
+                        )
+                        for e in edges
+                    )
+                    if not has_loop_edge:
+                        edges.append({
+                            "id": f"edge-loop-{n_id}-{loop_target_id}",
+                            "source": n_id,
+                            "target": loop_target_id,
+                            "label": "🔄 Loop Back",
+                            "style": {"strokeDasharray": "5,5", "stroke": "#8b5cf6"}
+                        })
+                        modified = True
+
+            if modified:
+                rule.visual_data['edges'] = edges
+                rule.visual_data['nodes'] = nodes
+                try:
+                    rule.save(update_fields=['visual_data'])
+                except Exception:
+                    pass
+
             return rule.visual_data
 
     nodes = []
@@ -38,7 +209,7 @@ def build_visual_data_from_rule(rule):
     nodes.append({
         "id": t_id,
         "type": "trigger",
-        "position": {"x": 100, "y": 150},
+        "position": {"x": 80, "y": 150},
         "ruleType": rule_type,
         "data": {
             "target_mode": target_mode,
@@ -60,7 +231,7 @@ def build_visual_data_from_rule(rule):
         nodes.append({
             "id": c_id,
             "type": "condition",
-            "position": {"x": 550, "y": 150},
+            "position": {"x": 440, "y": 150},
             "ruleType": rule_type,
             "data": {
                 "match_type": match_type,
@@ -85,7 +256,7 @@ def build_visual_data_from_rule(rule):
         nodes.append({
             "id": a_id,
             "type": "action",
-            "position": {"x": 1000, "y": 150},
+            "position": {"x": 440 if is_share else 800, "y": 150},
             "ruleType": rule_type,
             "data": {
                 "action_type": "send_dm",
@@ -102,9 +273,10 @@ def build_visual_data_from_rule(rule):
             "target": a_id
         })
     else:
+        created_action_nodes = []
         for i, action in enumerate(actions):
             a_id = f"node-a-{rule.id}-{action.id or i}"
-            pos_y = 80 + (i * 200)
+            pos_y = 80 + (i * 320)
             is_primary = action.action_type == 'send_dm'
             act_label = "DIRECT MESSAGE" if action.action_type == 'send_dm' else ("PUBLIC REPLY" if action.action_type == 'reply_comment' else "ACTION")
 
@@ -115,6 +287,8 @@ def build_visual_data_from_rule(rule):
                 "is_placeholder": False,
                 "messages": action.messages or [],
                 "dm_format": action.dm_format or 'text',
+                "parent_event": action.parent_event or None,
+                "loop_target_id": action.loop_target_id or None,
             }
 
             if action.generic_template_payload and action.generic_template_payload.get('elements'):
@@ -127,19 +301,56 @@ def build_visual_data_from_rule(rule):
                 act_data.update(action.show_profile_payload)
             if action.check_follow_payload:
                 act_data.update(action.check_follow_payload)
+            if action.attachment_payload:
+                act_data["attachments"] = action.attachment_payload
 
             nodes.append({
                 "id": a_id,
                 "type": "action",
-                "position": {"x": 1000, "y": pos_y},
+                "position": {"x": 440 if is_share and not action.parent_event else (800 + (i * 360 if action.parent_event else 0)), "y": pos_y},
                 "ruleType": rule_type,
                 "data": act_data
             })
-            edges.append({
-                "id": f"edge-{rule.id}-act-{i}",
-                "source": parent_id,
-                "target": a_id
-            })
+            created_action_nodes.append((a_id, action))
+
+            # Find source node and label
+            if action.parent_event:
+                # Find parent action
+                found_parent = False
+                for prev_id, prev_action in created_action_nodes[:-1]:
+                    btn_title = find_button_title_in_action(prev_action, action.parent_event)
+                    if btn_title:
+                        edges.append({
+                            "id": f"edge-reply-{prev_id}-{a_id}",
+                            "source": prev_id,
+                            "target": a_id,
+                            "label": btn_title or action.parent_event
+                        })
+                        found_parent = True
+                        break
+                if not found_parent:
+                    edges.append({
+                        "id": f"edge-{rule.id}-act-{i}",
+                        "source": parent_id,
+                        "target": a_id,
+                        "label": action.parent_event
+                    })
+            else:
+                edges.append({
+                    "id": f"edge-{rule.id}-act-{i}",
+                    "source": parent_id,
+                    "target": a_id
+                })
+
+            # If this is a loop_back action, also append the loop return wire
+            if action.dm_format == 'loop_back' and action.loop_target_id:
+                edges.append({
+                    "id": f"edge-loop-{a_id}-{action.loop_target_id}",
+                    "source": a_id,
+                    "target": action.loop_target_id,
+                    "label": "🔄 Loop Back",
+                    "style": {"strokeDasharray": "5,5", "stroke": "#8b5cf6"}
+                })
 
     constructed = {"nodes": nodes, "edges": edges}
     rule.visual_data = constructed
@@ -179,6 +390,7 @@ class AutomationListCreateView(APIView):
                     "dm_format": action.dm_format,
                     "messages": action.messages,
                     "parent_event": action.parent_event,
+                    "loop_target_id": action.loop_target_id,
                     "quick_replies": action.quick_reply_payload.get("quick_replies", []) if action.quick_reply_payload else [],
                     "buttons": action.button_template_payload.get("buttons", []) if action.button_template_payload else [],
                     "elements": action.generic_template_payload.get("elements", []) if action.generic_template_payload else [],
@@ -293,10 +505,22 @@ class AutomationListCreateView(APIView):
         # Rebuild AutomationActions
         rule.actions.all().delete()
         action_nodes = [n for n in nodes if n.get('type') == 'action' and not n.get(
-            'data', {}).get('is_placeholder', False)]
+            'data', {}).get('is_placeholder', False) and not n.get('data', {}).get('is_cf_fork', False)]
 
-        # Sort actions by y-position to preserve execution order
-        action_nodes.sort(key=lambda n: n.get('position', {}).get('y', 0))
+        # Find which action nodes are child nodes (connected from other action nodes or cf_fork)
+        action_node_ids = {n.get('id') for n in action_nodes}
+        child_node_ids = set()
+        for e in edges:
+            src = e.get('source')
+            tgt = e.get('target')
+            if tgt in action_node_ids:
+                if src in action_node_ids and not is_loop_return_edge(e):
+                    child_node_ids.add(tgt)
+                elif '-cf-fork' in str(src) or 'fork' in str(src):
+                    child_node_ids.add(tgt)
+
+        # Sort actions: Root actions first (order=0, 1...), then child actions by y-position
+        action_nodes.sort(key=lambda n: (1 if n.get('id') in child_node_ids else 0, n.get('position', {}).get('y', 0)))
 
         for idx, node in enumerate(action_nodes):
             a_data = node.get('data', {})
@@ -307,6 +531,21 @@ class AutomationListCreateView(APIView):
             if not messages or not isinstance(messages, list):
                 messages = [a_data.get('text', 'Thanks for your interest!')]
 
+            # If this is a root action (not a child of any action), force parent_event=None
+            parent_event = a_data.get('parent_event')
+            if node.get('id') not in child_node_ids:
+                parent_event = None
+                if isinstance(node.get('data'), dict):
+                    node['data']['parent_event'] = None
+
+            # Detect cf_branch
+            cf_branch = a_data.get('cf_branch')
+            if not cf_branch:
+                if a_data.get('is_cf_following') or 'following' in str(node.get('id')):
+                    cf_branch = 'following'
+                elif a_data.get('is_cf_not_following') or 'not-following' in str(node.get('id')):
+                    cf_branch = 'not_following'
+
             action = AutomationAction(
                 rule=rule,
                 order=idx,
@@ -314,8 +553,11 @@ class AutomationListCreateView(APIView):
                 dm_format=dm_format,
                 messages=messages,
                 message_mode=a_data.get('message_mode', 'random'),
-                parent_event=a_data.get('parent_event')
+                parent_event=parent_event,
+                loop_target_id=a_data.get('loop_target_id')
             )
+            if cf_branch:
+                action.check_follow_payload = {"cf_branch": cf_branch}
 
             # Store format-specific payloads
             if dm_format == 'quick_reply':
@@ -447,6 +689,11 @@ class AutomationListCreateView(APIView):
                     "not_following_profile_url": a_data.get('not_following_profile_url', '')
                 }
 
+            elif dm_format == 'loop_back':
+                action.loop_target_id = a_data.get('loop_target_id')
+                if not action.messages or action.messages == ['Thanks for your interest!']:
+                    action.messages = ["Loop Back"]
+
             action.save()
 
         # Rebuild GiveawayConfig if present
@@ -500,6 +747,8 @@ class AutomationDetailView(APIView):
                 "action_type": action.action_type,
                 "dm_format": action.dm_format,
                 "messages": action.messages,
+                "parent_event": action.parent_event,
+                "loop_target_id": action.loop_target_id,
                 "quick_replies": action.quick_reply_payload.get("quick_replies", []) if action.quick_reply_payload else [],
                 "buttons": action.button_template_payload.get("buttons", []) if action.button_template_payload else [],
                 "elements": action.generic_template_payload.get("elements", []) if action.generic_template_payload else [],
