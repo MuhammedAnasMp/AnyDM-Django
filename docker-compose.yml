@@ -111,8 +111,7 @@ services:
     restart: unless-stopped
     command: tunnel --protocol http2 --config /etc/cloudflared/config.yml run
     volumes:
-      - /home/anas/.cloudflared:/etc/cloudflared:ro
-      - /home/anas/.cloudflared:/home/anas/.cloudflared:ro
+      - ./cloudflared:/etc/cloudflared:ro
     depends_on:
       - web-dev
       - web

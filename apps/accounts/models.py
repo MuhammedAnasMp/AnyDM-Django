@@ -38,6 +38,10 @@ class User(AbstractUser):
     trial_start_date = models.DateTimeField(null=True, blank=True)
     premium_expires_at = models.DateTimeField(null=True, blank=True)
     has_extended_trial = models.BooleanField(default=False)
+    is_following_official_account = models.BooleanField(default=False)
+    official_follow_points_awarded = models.IntegerField(default=0)
+    official_follow_at = models.DateTimeField(null=True, blank=True)
+    official_unfollow_at = models.DateTimeField(null=True, blank=True)
 
     @property
     def is_premium_active(self):

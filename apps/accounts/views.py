@@ -1329,6 +1329,9 @@ def serialize_user_payload(user):
         'is_creator_vip': user.is_creator_vip,
         'creator_reward_type': user.creator_reward_type,
         'creator_commission_percent': float(user.creator_commission_percent) if user.creator_commission_percent else 10.0,
+        'is_following_official_account': getattr(user, 'is_following_official_account', False),
+        'official_follow_points_awarded': getattr(user, 'official_follow_points_awarded', 0),
+        'official_follow_at': user.official_follow_at.isoformat() if getattr(user, 'official_follow_at', None) else None,
     }
     if user.is_superuser:
         payload['is_superuser'] = True
@@ -1384,6 +1387,10 @@ class ReferralStatsView(APIView):
             'points_needed_for_premium': sys_settings.points_to_redeem,
             'paid_plan_price': float(sys_settings.premium_plan_price),
             'referral_points': sys_settings.referral_points,
+            'official_follow_points': getattr(sys_settings, 'official_follow_points', 50),
+            'is_following_official_account': getattr(user, 'is_following_official_account', False),
+            'official_follow_points_awarded': getattr(user, 'official_follow_points_awarded', 0),
+            'official_follow_at': user.official_follow_at.isoformat() if getattr(user, 'official_follow_at', None) else None,
             'trial_days_left': user.trial_days_left,
             'plan': user.plan,
             'is_premium_active': user.is_premium_active,
@@ -1489,6 +1496,84 @@ class SetCustomReferralCodeView(APIView):
             'message': f'Custom referral ID set to {code} successfully!',
             'referral_code': user.referral_code,
             'custom_code_set': user.custom_code_set,
+            'user': serialize_user_payload(user)
+        }, status=status.HTTP_200_OK)
+
+
+class ClaimOfficialFollowRewardView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if getattr(user, 'is_following_official_account', False):
+            return Response({
+                'message': 'You have already claimed your 50 points for following @anydm.in!',
+                'already_claimed': True,
+                'points': user.points,
+                'is_following_official_account': True,
+                'user': serialize_user_payload(user)
+            }, status=status.HTTP_200_OK)
+
+        from apps.settings.models import SystemSettings
+        from django.utils import timezone
+        sys_settings = SystemSettings.get_settings()
+        points_to_award = getattr(sys_settings, 'official_follow_points', 50) or 50
+
+        user.points += points_to_award
+        user.is_following_official_account = True
+        user.official_follow_points_awarded = points_to_award
+        user.official_follow_at = timezone.now()
+        user.save(update_fields=[
+            'points',
+            'is_following_official_account',
+            'official_follow_points_awarded',
+            'official_follow_at'
+        ])
+
+        print(f"[Official Follow Claimed] User {user.username} claimed {points_to_award} points for following @anydm.in. Total points: {user.points}")
+
+        return Response({
+            'message': f'Success! +{points_to_award} points added to your balance for following @anydm.in.',
+            'points_awarded': points_to_award,
+            'points': user.points,
+            'is_following_official_account': True,
+            'user': serialize_user_payload(user)
+        }, status=status.HTTP_200_OK)
+
+
+class UnfollowOfficialRewardView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not getattr(user, 'is_following_official_account', False):
+            return Response({
+                'message': 'User is not marked as following @anydm.in.',
+                'points': user.points,
+                'is_following_official_account': False,
+                'user': serialize_user_payload(user)
+            }, status=status.HTTP_200_OK)
+
+        from django.utils import timezone
+        points_to_deduct = getattr(user, 'official_follow_points_awarded', 0) or 50
+        user.points = max(0, user.points - points_to_deduct)
+        user.is_following_official_account = False
+        user.official_follow_points_awarded = 0
+        user.official_unfollow_at = timezone.now()
+        user.save(update_fields=[
+            'points',
+            'is_following_official_account',
+            'official_follow_points_awarded',
+            'official_unfollow_at'
+        ])
+
+        print(f"[Official Unfollow] User {user.username} unfollowed @anydm.in. Deducted {points_to_deduct} points. Total points: {user.points}")
+
+        return Response({
+            'message': f'Unfollow recorded. {points_to_deduct} points deducted from balance.',
+            'points_deducted': points_to_deduct,
+            'points': user.points,
+            'is_following_official_account': False,
             'user': serialize_user_payload(user)
         }, status=status.HTTP_200_OK)
 

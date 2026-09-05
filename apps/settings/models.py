@@ -38,6 +38,7 @@ class SystemSettings(models.Model):
     extend_days = models.IntegerField(default=7)
     referral_points = models.IntegerField(default=50)
     points_to_redeem = models.IntegerField(default=100)
+    official_follow_points = models.IntegerField(default=50)
     premium_plan_price = models.DecimalField(max_digits=10, decimal_places=2, default=499.00)
 
     # Global AI options

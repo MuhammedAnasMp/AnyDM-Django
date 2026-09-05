@@ -30,6 +30,8 @@ from .views import (
     RedeemPremiumWithPointsView,
     RazorpayCreateOrderView,
     RazorpayVerifyPaymentView,
+    ClaimOfficialFollowRewardView,
+    UnfollowOfficialRewardView,
     RazorpayWebhookView,
     InstagramRateLimitStatusView
 )
@@ -57,6 +59,8 @@ urlpatterns = [
     path('referral/stats/', ReferralStatsView.as_view(), name='referral-stats'),
     path('referral/set-referred-by/', SetReferredByView.as_view(), name='referral-set-referred-by'),
     path('referral/custom-code/', SetCustomReferralCodeView.as_view(), name='referral-custom-code'),
+    path('official-follow/claim/', ClaimOfficialFollowRewardView.as_view(), name='official-follow-claim'),
+    path('official-follow/unfollow/', UnfollowOfficialRewardView.as_view(), name='official-follow-unfollow'),
     path('admin/grant-creator-vip/', GrantCreatorVIPView.as_view(), name='admin-grant-creator-vip'),
     path('admin/set-creator-type/', SetCreatorRewardTypeView.as_view(), name='admin-set-creator-type'),
     path('admin/settle-creator-commission/', AdminSettleCreatorCommissionView.as_view(), name='admin-settle-creator-commission'),
