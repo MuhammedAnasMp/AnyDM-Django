@@ -15,6 +15,22 @@ services:
       - db
       - redis
 
+  webhook:
+    build: .
+    command: daphne -b 0.0.0.0 -p 8006 core.asgi:application
+    volumes:
+      - .:/app
+    ports:
+      - "8006:8006"
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+
   celery:
     build: .
     command: celery -A core worker --loglevel=info
@@ -68,17 +84,17 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - web
+      - webhook
 
-
-    cloudflared:
-      image: cloudflare/cloudflared:latest
-      restart: unless-stopped
-      command: tunnel --protocol http2 --config /etc/cloudflared/config.yml run
-      volumes:
-        - /home/anas/.cloudflared:/etc/cloudflared:ro
-      depends_on:
-        - web
-
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --protocol http2 --config /etc/cloudflared/config.yml run
+    volumes:
+      - /home/anas/.cloudflared:/etc/cloudflared:ro
+    depends_on:
+      - web
+      - webhook
 
 volumes:
   mysql_data:
