@@ -28,24 +28,76 @@ SECRET_KEY = 'django-insecure-5c5y^ry^y$!&nj@it%&iegdn&6-moi=x^(!ja0_1-7@r2%&$k^
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
+FRONTEND_HOST = os.getenv("FRONTEND_HOST", "zoyee.in")
+BACKEND_HOST = os.getenv("BACKEND_HOST", "localapi.locanydm.online")
+
 ALLOWED_HOSTS = ["*"]
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
+
+from corsheaders.defaults import default_headers, default_methods
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'ngrok-skip-browser-warning',
+    'x-bypass-cache',
+    'x-requested-with',
+    'content-type',
+    'accept',
+    'origin',
+    'authorization',
+    'x-csrftoken',
+]
+
+CORS_ALLOW_METHODS = list(default_methods) + [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
+
 CORS_ALLOWED_ORIGINS = [
     "https://localhost:3000",
     "http://localhost:3000",
-    f'https://{os.getenv("FRONTEND_HOST")}',
-    f'http://{os.getenv("FRONTEND_HOST")}',
-    f'https://{os.getenv("BACKEND_HOST")}',
-    f'http://{os.getenv("BACKEND_HOST")}'
+    "https://127.0.0.1:3000",
+    "http://127.0.0.1:3000",
+    f'https://{FRONTEND_HOST}',
+    f'http://{FRONTEND_HOST}',
+    f'https://{BACKEND_HOST}',
+    f'http://{BACKEND_HOST}',
+    "https://zoyee.in",
+    "http://zoyee.in",
+    "https://localapi.locanydm.online",
+    "http://localapi.locanydm.online",
+    "https://api.locanydm.online",
+    "http://api.locanydm.online",
+    "https://wb.locanydm.online",
+    "http://wb.locanydm.online",
+]
+
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https:\/\/.*\.zoyee\.in$",
+    r"^http:\/\/.*\.zoyee\.in$",
+    r"^https:\/\/.*\.locanydm\.online$",
+    r"^http:\/\/.*\.locanydm\.online$",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
     "https://localhost:3000",
     "http://localhost:3000",
-    f'https://{os.getenv("FRONTEND_HOST")}',
-    f'http://{os.getenv("FRONTEND_HOST")}',
-    f'https://{os.getenv("BACKEND_HOST")}',
-    f'http://{os.getenv("BACKEND_HOST")}'
+    "https://127.0.0.1:3000",
+    "http://127.0.0.1:3000",
+    f'https://{FRONTEND_HOST}',
+    f'http://{FRONTEND_HOST}',
+    f'https://{BACKEND_HOST}',
+    f'http://{BACKEND_HOST}',
+    "https://zoyee.in",
+    "http://zoyee.in",
+    "https://*.zoyee.in",
+    "https://localapi.locanydm.online",
+    "http://localapi.locanydm.online",
+    "https://*.locanydm.online",
 ]
 
 # Security settings for Cloudflare / Proxy
