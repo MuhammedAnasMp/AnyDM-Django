@@ -33,7 +33,15 @@ from .views import (
     ClaimOfficialFollowRewardView,
     UnfollowOfficialRewardView,
     RazorpayWebhookView,
-    InstagramRateLimitStatusView
+    InstagramRateLimitStatusView,
+    LinkInBioSettingsView,
+    LinkInBioBlocksView,
+    LinkInBioBlocksReorderView,
+    LinkInBioRedirectRulesView,
+    LinkInBioUsernameCheckView,
+    PublicLinkInBioView,
+    PublicLinkInBioResolveRedirectView,
+    PublicLinkInBioTrackView
 )
 
 urlpatterns = [
@@ -55,6 +63,18 @@ urlpatterns = [
     path('public/store/<str:username>/', PublicStorefrontView.as_view(), name='public-storefront'),
     path('public/store/<str:username>/product/<int:product_id>/', PublicProductDetailView.as_view(), name='public-product-detail'),
     
+    # Link-in-Bio Endpoints
+    path('link-in-bio/', LinkInBioSettingsView.as_view(), name='link-in-bio-settings'),
+    path('link-in-bio/blocks/', LinkInBioBlocksView.as_view(), name='link-in-bio-blocks'),
+    path('link-in-bio/blocks/<int:block_id>/', LinkInBioBlocksView.as_view(), name='link-in-bio-block-detail'),
+    path('link-in-bio/blocks/reorder/', LinkInBioBlocksReorderView.as_view(), name='link-in-bio-blocks-reorder'),
+    path('link-in-bio/redirect-rules/', LinkInBioRedirectRulesView.as_view(), name='link-in-bio-redirect-rules'),
+    path('link-in-bio/redirect-rules/<int:rule_id>/', LinkInBioRedirectRulesView.as_view(), name='link-in-bio-redirect-rule-detail'),
+    path('link-in-bio/check-username/', LinkInBioUsernameCheckView.as_view(), name='link-in-bio-check-username'),
+    path('public/link-in-bio/<str:username>/', PublicLinkInBioView.as_view(), name='public-link-in-bio'),
+    path('public/link-in-bio/<str:username>/resolve-redirect/', PublicLinkInBioResolveRedirectView.as_view(), name='public-link-in-bio-resolve-redirect'),
+    path('public/link-in-bio/<str:username>/track/', PublicLinkInBioTrackView.as_view(), name='public-link-in-bio-track'),
+
     # Referral & Billing Endpoints
     path('referral/stats/', ReferralStatsView.as_view(), name='referral-stats'),
     path('referral/set-referred-by/', SetReferredByView.as_view(), name='referral-set-referred-by'),
@@ -74,3 +94,4 @@ urlpatterns = [
     path('razorpay/verify-payment/', RazorpayVerifyPaymentView.as_view(), name='razorpay-verify-payment'),
     path('razorpay/webhook/', RazorpayWebhookView.as_view(), name='razorpay-webhook'),
 ]
+

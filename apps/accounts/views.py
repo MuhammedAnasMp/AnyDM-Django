@@ -1,17 +1,27 @@
 import os
+import re
 import razorpay
 import requests
 import base64
 import hashlib
 import hmac
 import json
+from django.db import models
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from .firebase_auth import verify_firebase_token, delete_firebase_user
-from .models import InstagramAccount, WebsiteSettings, SellerKYC
+from .models import (
+    InstagramAccount, 
+    WebsiteSettings, 
+    SellerKYC,
+    LinkInBioPage,
+    LinkInBioBlock,
+    LinkInBioRedirectRule,
+    LinkInBioAnalyticsEvent
+)
 from apps.products.models import Product
 from django.contrib.auth import get_user_model
 from django.conf import settings
@@ -97,12 +107,18 @@ class FirebaseLoginView(APIView):
                             user.referred_by = referrer
                             user.referred_by_set = True
 
-                            sys_settings = SystemSettings.get_settings()
-                            referrer.points += sys_settings.referral_points
-                            referrer.save()
+                            # Active commission creators do not receive referral points
+                            is_commission_creator = referrer.is_creator_program_active and referrer.creator_reward_type == 'commission'
+                            if not is_commission_creator:
+                                sys_settings = SystemSettings.get_settings()
+                                referrer.points += sys_settings.referral_points
+                                referrer.save(update_fields=['points'])
+                                print(
+                                    f"[Referral] User {user.username} referred by {referrer.username}. Awarded {sys_settings.referral_points} points.")
+                            else:
+                                print(
+                                    f"[Referral] User {user.username} referred by active commission creator {referrer.username}. Points skipped (active commission program).")
                             user.save()
-                            print(
-                                f"[Referral] User {user.username} referred by {referrer.username}. Awarded {sys_settings.referral_points} points.")
                     except Exception as ref_err:
                         print(f"Error applying referral code: {ref_err}")
             else:
@@ -419,12 +435,18 @@ class InstagramLoginView(APIView):
                                     user.referred_by = referrer
                                     user.referred_by_set = True
 
-                                    sys_settings = SystemSettings.get_settings()
-                                    referrer.points += sys_settings.referral_points
-                                    referrer.save()
+                                    # Active commission creators do not receive referral points
+                                    is_commission_creator = referrer.is_creator_program_active and referrer.creator_reward_type == 'commission'
+                                    if not is_commission_creator:
+                                        sys_settings = SystemSettings.get_settings()
+                                        referrer.points += sys_settings.referral_points
+                                        referrer.save(update_fields=['points'])
+                                        print(
+                                            f"[Referral] User {user.username} referred by {referrer.username} via IG. Awarded {sys_settings.referral_points} points.")
+                                    else:
+                                        print(
+                                            f"[Referral] User {user.username} referred by active commission creator {referrer.username} via IG. Points skipped (active commission program).")
                                     user.save()
-                                    print(
-                                        f"[Referral] User {user.username} referred by {referrer.username} via IG. Awarded {sys_settings.referral_points} points.")
                             except Exception as ref_err:
                                 print(
                                     f"Error applying referral code: {ref_err}")
@@ -1329,6 +1351,8 @@ def serialize_user_payload(user):
         'is_creator_vip': user.is_creator_vip,
         'creator_reward_type': user.creator_reward_type,
         'creator_commission_percent': float(user.creator_commission_percent) if user.creator_commission_percent else 10.0,
+        'creator_program_expires_at': user.creator_program_expires_at.isoformat() if getattr(user, 'creator_program_expires_at', None) else None,
+        'is_creator_program_active': getattr(user, 'is_creator_program_active', False),
         'is_following_official_account': getattr(user, 'is_following_official_account', False),
         'official_follow_points_awarded': getattr(user, 'official_follow_points_awarded', 0),
         'official_follow_at': user.official_follow_at.isoformat() if getattr(user, 'official_follow_at', None) else None,
@@ -1506,8 +1530,9 @@ class ClaimOfficialFollowRewardView(APIView):
     def post(self, request):
         user = request.user
         if getattr(user, 'is_following_official_account', False):
+            awarded = getattr(user, 'official_follow_points_awarded', 50) or 50
             return Response({
-                'message': 'You have already claimed your 50 points for following @anydm.in!',
+                'message': f'You have already claimed your {awarded} points for following @anydm.in!',
                 'already_claimed': True,
                 'points': user.points,
                 'is_following_official_account': True,
@@ -1581,7 +1606,7 @@ class UnfollowOfficialRewardView(APIView):
 class GrantCreatorVIPView(APIView):
     def post(self, request):
         email = request.data.get('email', '').strip()
-        months = int(request.data.get('months', 3))
+        custom_end_date = request.data.get('end_date')
 
         if not email:
             return Response({'error': 'Email address or username is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1590,6 +1615,10 @@ class GrantCreatorVIPView(APIView):
         User = get_user_model()
         from django.utils import timezone
         from django.db.models import Q
+        from apps.settings.models import SystemSettings
+        sys_settings = SystemSettings.get_settings()
+
+        months = int(request.data.get('months', sys_settings.creator_vip_default_term_months or 3))
 
         target_user = User.objects.filter(
             Q(email__iexact=email) | Q(username__iexact=email)).first()
@@ -1599,32 +1628,41 @@ class GrantCreatorVIPView(APIView):
         target_user.plan = 'pro'
         target_user.is_creator_vip = True
         target_user.creator_reward_type = 'vip'
-        days_to_add = months * 30
-        if target_user.premium_expires_at and target_user.premium_expires_at > timezone.now():
-            target_user.premium_expires_at += timezone.timedelta(
-                days=days_to_add)
-        else:
-            target_user.premium_expires_at = timezone.now(
-            ) + timezone.timedelta(days=days_to_add)
+        now = timezone.now()
 
+        if custom_end_date:
+            try:
+                from datetime import datetime
+                parsed_dt = datetime.fromisoformat(custom_end_date.replace('Z', '+00:00'))
+                if timezone.is_naive(parsed_dt):
+                    parsed_dt = timezone.make_aware(parsed_dt)
+                expiry_dt = parsed_dt
+            except Exception:
+                expiry_dt = now + timezone.timedelta(days=months * 30)
+        else:
+            expiry_dt = now + timezone.timedelta(days=months * 30)
+
+        target_user.premium_expires_at = expiry_dt
+        target_user.creator_program_expires_at = expiry_dt
         target_user.save()
         auto_enable_subscription_ai_for_user(target_user)
 
         print(
-            f"[Creator-VIP-Grant] Granted {months} months Creator Pro access to {target_user.username} ({email}). Expires: {target_user.premium_expires_at}")
+            f"[Creator-VIP-Grant] Granted Creator Pro VIP access to {target_user.username} ({email}). Expires: {target_user.creator_program_expires_at}")
 
         return Response({
-            'message': f'Granted {months} months Creator Pro VIP access to {target_user.username} ({email})!',
+            'message': f'Granted Creator Pro VIP access to {target_user.username} ({email}) until {expiry_dt.strftime("%d %b %Y")}!',
             'user': serialize_user_payload(target_user)
         }, status=status.HTTP_200_OK)
 
 
 class SetCreatorRewardTypeView(APIView):
-    """Admin endpoint to set a creator's reward type (VIP or Commission) and commission %."""
+    """Admin endpoint to set a creator's reward type (VIP or Commission), duration term/end date, and commission %."""
     def post(self, request):
         email = request.data.get('email', '').strip()
         reward_type = request.data.get('reward_type', '').strip()
         commission_percent = request.data.get('commission_percent', 10)
+        custom_end_date = request.data.get('end_date')
 
         if not email:
             return Response({'error': 'Email or username is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1635,7 +1673,9 @@ class SetCreatorRewardTypeView(APIView):
         from django.db.models import Q
         from django.utils import timezone
         from decimal import Decimal
+        from apps.settings.models import SystemSettings
         User = get_user_model()
+        sys_settings = SystemSettings.get_settings()
 
         target_user = User.objects.filter(
             Q(email__iexact=email) | Q(username__iexact=email)).first()
@@ -1644,8 +1684,10 @@ class SetCreatorRewardTypeView(APIView):
 
         target_user.is_creator_vip = True
         target_user.creator_reward_type = reward_type
+        now = timezone.now()
 
         if reward_type == 'commission':
+            months = int(request.data.get('months', sys_settings.creator_commission_default_term_months or 6))
             try:
                 pct = Decimal(str(commission_percent))
                 if pct < 1 or pct > 100:
@@ -1654,30 +1696,51 @@ class SetCreatorRewardTypeView(APIView):
             except Exception:
                 return Response({'error': 'Invalid commission percent value.'}, status=status.HTTP_400_BAD_REQUEST)
 
+            if custom_end_date:
+                try:
+                    from datetime import datetime
+                    parsed_dt = datetime.fromisoformat(custom_end_date.replace('Z', '+00:00'))
+                    if timezone.is_naive(parsed_dt):
+                        parsed_dt = timezone.make_aware(parsed_dt)
+                    target_user.creator_program_expires_at = parsed_dt
+                except Exception:
+                    target_user.creator_program_expires_at = now + timezone.timedelta(days=months * 30)
+            else:
+                target_user.creator_program_expires_at = now + timezone.timedelta(days=months * 30)
+
             target_user.save()
             auto_enable_subscription_ai_for_user(target_user)
 
-            print(f"[Creator-Commission-Set] Set {target_user.username} to commission mode at {commission_percent}%.")
+            print(f"[Creator-Commission-Set] Set {target_user.username} to commission mode at {commission_percent}% (Expires: {target_user.creator_program_expires_at}).")
             return Response({
-                'message': f'Set {target_user.username} to Commission mode at {commission_percent}%.',
+                'message': f'Set {target_user.username} to Commission mode at {commission_percent}% until {target_user.creator_program_expires_at.strftime("%d %b %Y")}!',
                 'user': serialize_user_payload(target_user)
             }, status=status.HTTP_200_OK)
 
         elif reward_type == 'vip':
-            months = int(request.data.get('months', 3))
+            months = int(request.data.get('months', sys_settings.creator_vip_default_term_months or 3))
             target_user.plan = 'pro'
-            days_to_add = months * 30
-            if target_user.premium_expires_at and target_user.premium_expires_at > timezone.now():
-                target_user.premium_expires_at += timezone.timedelta(days=days_to_add)
-            else:
-                target_user.premium_expires_at = timezone.now() + timezone.timedelta(days=days_to_add)
 
+            if custom_end_date:
+                try:
+                    from datetime import datetime
+                    parsed_dt = datetime.fromisoformat(custom_end_date.replace('Z', '+00:00'))
+                    if timezone.is_naive(parsed_dt):
+                        parsed_dt = timezone.make_aware(parsed_dt)
+                    expiry_dt = parsed_dt
+                except Exception:
+                    expiry_dt = now + timezone.timedelta(days=months * 30)
+            else:
+                expiry_dt = now + timezone.timedelta(days=months * 30)
+
+            target_user.premium_expires_at = expiry_dt
+            target_user.creator_program_expires_at = expiry_dt
             target_user.save()
             auto_enable_subscription_ai_for_user(target_user)
 
-            print(f"[Creator-VIP-Set] Set {target_user.username} to VIP mode with {months} months Pro.")
+            print(f"[Creator-VIP-Set] Set {target_user.username} to VIP Free Pro mode until {expiry_dt}.")
             return Response({
-                'message': f'Set {target_user.username} to VIP mode with {months} months Creator Pro!',
+                'message': f'Granted Creator Pro VIP access to {target_user.username} until {expiry_dt.strftime("%d %b %Y")}!',
                 'user': serialize_user_payload(target_user)
             }, status=status.HTTP_200_OK)
 
@@ -1924,6 +1987,8 @@ class AdminUsersAnalyticsView(APIView):
                 'is_creator_vip': u.is_creator_vip,
                 'creator_reward_type': u.creator_reward_type,
                 'creator_commission_percent': float(u.creator_commission_percent) if u.creator_commission_percent else 10.0,
+                'creator_program_expires_at': u.creator_program_expires_at.isoformat() if getattr(u, 'creator_program_expires_at', None) else None,
+                'is_creator_program_active': getattr(u, 'is_creator_program_active', False),
                 'commission_total_earned': comm_total_earned,
                 'commission_total_pending': comm_total_pending,
                 'commission_total_paid': comm_total_paid,
@@ -1962,10 +2027,21 @@ class GlobalSystemSettingsView(APIView):
             'extend_days': sys_settings.extend_days,
             'referral_points': sys_settings.referral_points,
             'points_to_redeem': sys_settings.points_to_redeem,
+            'official_follow_points': getattr(sys_settings, 'official_follow_points', 50),
             'premium_plan_price': float(sys_settings.premium_plan_price),
             'enable_ai': sys_settings.enable_ai,
             'enable_subscription_ai': sys_settings.enable_subscription_ai,
             'business_gemini_api_key': sys_settings.business_gemini_api_key,
+            # 🎁 Creator VIP Free Pro
+            'creator_vip_extended_trial_days': getattr(sys_settings, 'creator_vip_extended_trial_days', 15),
+            'creator_vip_points_per_paid_sub': getattr(sys_settings, 'creator_vip_points_per_paid_sub', 20),
+            'creator_vip_max_redemption_months': getattr(sys_settings, 'creator_vip_max_redemption_months', 5),
+            'creator_vip_default_term_months': getattr(sys_settings, 'creator_vip_default_term_months', 3),
+            # 💰 Creator Commission Earnings
+            'creator_commission_percent': float(getattr(sys_settings, 'creator_commission_percent', 10.00)),
+            'creator_min_payout_amount': float(getattr(sys_settings, 'creator_min_payout_amount', 500.00)),
+            'creator_payout_cycle_days': getattr(sys_settings, 'creator_payout_cycle_days', 30),
+            'creator_commission_default_term_months': getattr(sys_settings, 'creator_commission_default_term_months', 6),
         }, status=status.HTTP_200_OK)
 
     def post(self, request):
@@ -1978,10 +2054,21 @@ class GlobalSystemSettingsView(APIView):
         extend_days = request.data.get('extend_days')
         referral_points = request.data.get('referral_points')
         points_to_redeem = request.data.get('points_to_redeem')
+        official_follow_points = request.data.get('official_follow_points')
         premium_plan_price = request.data.get('premium_plan_price')
         enable_ai = request.data.get('enable_ai')
         enable_subscription_ai = request.data.get('enable_subscription_ai')
         business_gemini_api_key = request.data.get('business_gemini_api_key')
+
+        # Creator VIP & Commission fields
+        creator_vip_extended_trial_days = request.data.get('creator_vip_extended_trial_days')
+        creator_vip_points_per_paid_sub = request.data.get('creator_vip_points_per_paid_sub')
+        creator_vip_max_redemption_months = request.data.get('creator_vip_max_redemption_months')
+        creator_vip_default_term_months = request.data.get('creator_vip_default_term_months')
+        creator_commission_percent = request.data.get('creator_commission_percent')
+        creator_min_payout_amount = request.data.get('creator_min_payout_amount')
+        creator_payout_cycle_days = request.data.get('creator_payout_cycle_days')
+        creator_commission_default_term_months = request.data.get('creator_commission_default_term_months')
 
         if trial_days is not None:
             sys_settings.trial_days = int(trial_days)
@@ -1991,6 +2078,8 @@ class GlobalSystemSettingsView(APIView):
             sys_settings.referral_points = int(referral_points)
         if points_to_redeem is not None:
             sys_settings.points_to_redeem = int(points_to_redeem)
+        if official_follow_points is not None:
+            sys_settings.official_follow_points = int(official_follow_points)
         if premium_plan_price is not None:
             sys_settings.premium_plan_price = Decimal(str(premium_plan_price))
         if enable_ai is not None:
@@ -1999,6 +2088,23 @@ class GlobalSystemSettingsView(APIView):
             sys_settings.enable_subscription_ai = bool(enable_subscription_ai)
         if business_gemini_api_key is not None:
             sys_settings.business_gemini_api_key = str(business_gemini_api_key)
+
+        if creator_vip_extended_trial_days is not None:
+            sys_settings.creator_vip_extended_trial_days = int(creator_vip_extended_trial_days)
+        if creator_vip_points_per_paid_sub is not None:
+            sys_settings.creator_vip_points_per_paid_sub = int(creator_vip_points_per_paid_sub)
+        if creator_vip_max_redemption_months is not None:
+            sys_settings.creator_vip_max_redemption_months = int(creator_vip_max_redemption_months)
+        if creator_vip_default_term_months is not None:
+            sys_settings.creator_vip_default_term_months = int(creator_vip_default_term_months)
+        if creator_commission_percent is not None:
+            sys_settings.creator_commission_percent = Decimal(str(creator_commission_percent))
+        if creator_min_payout_amount is not None:
+            sys_settings.creator_min_payout_amount = Decimal(str(creator_min_payout_amount))
+        if creator_payout_cycle_days is not None:
+            sys_settings.creator_payout_cycle_days = int(creator_payout_cycle_days)
+        if creator_commission_default_term_months is not None:
+            sys_settings.creator_commission_default_term_months = int(creator_commission_default_term_months)
 
         sys_settings.save()
         print(f"[Settings Update] Global settings updated: {sys_settings}")
@@ -2010,10 +2116,19 @@ class GlobalSystemSettingsView(APIView):
                 'extend_days': sys_settings.extend_days,
                 'referral_points': sys_settings.referral_points,
                 'points_to_redeem': sys_settings.points_to_redeem,
+                'official_follow_points': getattr(sys_settings, 'official_follow_points', 50),
                 'premium_plan_price': float(sys_settings.premium_plan_price),
                 'enable_ai': sys_settings.enable_ai,
                 'enable_subscription_ai': sys_settings.enable_subscription_ai,
                 'business_gemini_api_key': sys_settings.business_gemini_api_key,
+                'creator_vip_extended_trial_days': getattr(sys_settings, 'creator_vip_extended_trial_days', 15),
+                'creator_vip_points_per_paid_sub': getattr(sys_settings, 'creator_vip_points_per_paid_sub', 20),
+                'creator_vip_max_redemption_months': getattr(sys_settings, 'creator_vip_max_redemption_months', 5),
+                'creator_vip_default_term_months': getattr(sys_settings, 'creator_vip_default_term_months', 3),
+                'creator_commission_percent': float(getattr(sys_settings, 'creator_commission_percent', 10.00)),
+                'creator_min_payout_amount': float(getattr(sys_settings, 'creator_min_payout_amount', 500.00)),
+                'creator_payout_cycle_days': getattr(sys_settings, 'creator_payout_cycle_days', 30),
+                'creator_commission_default_term_months': getattr(sys_settings, 'creator_commission_default_term_months', 6),
             }
         }, status=status.HTTP_200_OK)
 
@@ -2161,20 +2276,18 @@ class RazorpayVerifyPaymentView(APIView):
                 user, 'pro_purchase_count', 0) + 1
             user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
 
-            # Reward referrer 20 points on first paid purchase
+            # Reward referrer on first paid purchase
             if user.referred_by and not getattr(user, 'referral_paid_reward_given', False):
                 from apps.settings.models import SystemSettings
                 sys_settings = SystemSettings.get_settings()
-                reward_points = sys_settings.referral_points or 20
-                user.referred_by.points += reward_points
-                user.referred_by.save(update_fields=['points'])
-                user.referral_paid_reward_given = True
-                print(
-                    f"[Referral-Purchase-Reward] User {user.username} paid. Credited {reward_points} points to referrer {user.referred_by.username}.")
-
-                # Creator Commission: record commission if referrer is in commission mode
                 referrer = user.referred_by
-                if referrer.is_creator_vip and referrer.creator_reward_type == 'commission':
+                user.referral_paid_reward_given = True
+
+                # Creator Commission / VIP Points / Standard Points based on active program
+                is_active_commission = referrer.is_creator_program_active and referrer.creator_reward_type == 'commission'
+                is_active_vip = referrer.is_creator_program_active and referrer.creator_reward_type == 'vip'
+
+                if is_active_commission:
                     from decimal import Decimal
                     from apps.accounts.models import CreatorCommission
                     try:
@@ -2191,7 +2304,21 @@ class RazorpayVerifyPaymentView(APIView):
                         commission_amount=commission_amt,
                     )
                     print(
-                        f"[Creator-Commission] {referrer.username} earned {commission_amt} ({pct}% of {plan_price}) from {user.username}'s first purchase.")
+                        f"[Creator-Commission] {referrer.username} earned {commission_amt} ({pct}% of {plan_price}) from {user.username}'s first purchase (commission mode active, no points awarded).")
+                elif is_active_vip:
+                    # VIP Free Pro creator receives VIP bonus points per conversion
+                    reward_points = getattr(sys_settings, 'creator_vip_points_per_paid_sub', 20) or 20
+                    referrer.points += reward_points
+                    referrer.save(update_fields=['points'])
+                    print(
+                        f"[VIP-Purchase-Reward] User {user.username} paid. Credited {reward_points} VIP conversion points to {referrer.username}.")
+                else:
+                    # Program expired or standard user: gets standard referral points
+                    reward_points = sys_settings.referral_points or 20
+                    referrer.points += reward_points
+                    referrer.save(update_fields=['points'])
+                    print(
+                        f"[Standard-Purchase-Reward] User {user.username} paid. Credited {reward_points} standard referral points to {referrer.username}.")
 
             user.save()
             auto_enable_subscription_ai_for_user(user)
@@ -2383,3 +2510,575 @@ class InstagramRateLimitStatusView(APIView):
                 "auto_throttle": "ENABLED"
             }
         }, status=200)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LINK-IN-BIO VIEWS & LOGIC
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_reel_code(url: str) -> str:
+    """
+    Extracts the Instagram Reel or Post shortcode from a URL or raw code.
+    E.g. https://www.instagram.com/reel/C7abc123/?igsh=xyz -> C7abc123
+    """
+    if not url:
+        return ""
+    url = url.strip()
+    match = re.search(r'(?:reel|reels|p|tv|share/reel)/([A-Za-z0-9_-]+)', url, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    if re.match(r'^[A-Za-z0-9_-]{5,30}$', url):
+        return url
+    return ""
+
+
+def get_or_create_link_in_bio_page(user, active_account=None):
+    """
+    Gets or creates a LinkInBioPage for a user / active Instagram account.
+    Initializes default settings and sample blocks if new.
+    """
+    if not active_account:
+        active_account = getattr(user, 'active_instagram_account', None) or user.instagram_accounts.filter(is_active=True).first()
+
+    page = LinkInBioPage.objects.filter(user=user).first()
+    if not page and active_account:
+        page = LinkInBioPage.objects.filter(instagram_account=active_account).first()
+
+    if not page:
+        base_username = (active_account.username if active_account else user.username) or "creator"
+        base_username = re.sub(r'[^a-zA-Z0-9._-]', '', base_username).lower()
+        if not base_username:
+            base_username = f"user_{user.id}"
+
+        candidate = base_username
+        counter = 1
+        while LinkInBioPage.objects.filter(username__iexact=candidate).exists():
+            candidate = f"{base_username}_{counter}"
+            counter += 1
+
+        title = (active_account.full_name or active_account.username) if active_account else (user.get_full_name() or user.username)
+        profile_img = (active_account.profile_picture_url if active_account else getattr(user, 'photo_url', None)) or ''
+
+        social_accounts = []
+        if active_account:
+            social_accounts.append({
+                'id': 'social_ig',
+                'platform': 'instagram',
+                'url': f"https://instagram.com/{active_account.username}",
+                'label': f"@{active_account.username}",
+                'is_active': True
+            })
+
+        page = LinkInBioPage.objects.create(
+            user=user,
+            instagram_account=active_account,
+            username=candidate,
+            title=title or "Welcome to My Page",
+            bio="Check out my links, reels & exclusive content below!",
+            profile_image_url=profile_img,
+            theme_id='glass_monochrome',
+            social_accounts=social_accounts,
+            social_display_mode='icons_top',
+            smart_redirect_enabled=True,
+            smart_input_placeholder='Paste your Reel URL here...',
+            smart_input_button_text='Get Link',
+            smart_input_title='Have a Reel or Promo Link?',
+            is_published=True
+        )
+
+        LinkInBioBlock.objects.create(
+            page=page,
+            block_type='link',
+            title='✨ Explore My Store & Products',
+            subtitle='Shop bestsellers with exclusive direct deals',
+            url=f"/{active_account.username}" if active_account else "/store",
+            order=0,
+            is_active=True,
+            config={'badge': 'POPULAR', 'highlight_animation': 'shimmer'}
+        )
+        LinkInBioBlock.objects.create(
+            page=page,
+            block_type='contact_card',
+            title='💬 Direct Message & WhatsApp',
+            subtitle='Get in touch directly for collaborations & orders',
+            order=1,
+            is_active=True,
+            config={'whatsapp': '', 'email': user.email or ''}
+        )
+
+    elif active_account and not page.instagram_account:
+        page.instagram_account = active_account
+        page.save(update_fields=['instagram_account'])
+
+    return page
+
+
+def serialize_block(block: LinkInBioBlock) -> dict:
+    return {
+        'id': block.id,
+        'block_type': block.block_type,
+        'title': block.title,
+        'subtitle': block.subtitle,
+        'url': block.url,
+        'media_url': block.media_url,
+        'config': block.config or {},
+        'order': block.order,
+        'is_active': block.is_active,
+        'clicks_count': block.clicks_count,
+        'created_at': block.created_at.isoformat(),
+        'updated_at': block.updated_at.isoformat(),
+    }
+
+
+def serialize_redirect_rule(rule: LinkInBioRedirectRule) -> dict:
+    return {
+        'id': rule.id,
+        'title': rule.title,
+        'input_match_url': rule.input_match_url,
+        'match_type': rule.match_type,
+        'destination_type': rule.destination_type,
+        'destination_value': rule.destination_value,
+        'destination_title': rule.destination_title,
+        'is_active': rule.is_active,
+        'hits_count': rule.hits_count,
+        'created_at': rule.created_at.isoformat(),
+        'updated_at': rule.updated_at.isoformat(),
+    }
+
+
+def serialize_page(page: LinkInBioPage) -> dict:
+    return {
+        'id': page.id,
+        'username': page.username,
+        'title': page.title,
+        'bio': page.bio,
+        'profile_image_url': page.profile_image_url,
+        'banner_image_url': page.banner_image_url,
+        'theme_id': page.theme_id,
+        'custom_theme': page.custom_theme or {},
+        'social_accounts': page.social_accounts or [],
+        'social_display_mode': page.social_display_mode,
+        'smart_redirect_enabled': page.smart_redirect_enabled,
+        'smart_input_placeholder': page.smart_input_placeholder,
+        'smart_input_button_text': page.smart_input_button_text,
+        'smart_input_title': page.smart_input_title,
+        'is_published': page.is_published,
+        'views_count': page.views_count,
+        'clicks_count': page.clicks_count,
+        'created_at': page.created_at.isoformat(),
+        'updated_at': page.updated_at.isoformat(),
+    }
+
+
+class LinkInBioSettingsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        page = get_or_create_link_in_bio_page(user)
+        blocks = [serialize_block(b) for b in page.blocks.all().order_by('order', 'created_at')]
+        redirect_rules = [serialize_redirect_rule(r) for r in page.redirect_rules.all()]
+
+        total_redirect_hits = sum(r['hits_count'] for r in redirect_rules)
+
+        return Response({
+            'page': serialize_page(page),
+            'blocks': blocks,
+            'redirect_rules': redirect_rules,
+            'analytics': {
+                'views_count': page.views_count,
+                'clicks_count': page.clicks_count,
+                'redirect_hits': total_redirect_hits,
+                'total_blocks': len(blocks),
+                'active_blocks': len([b for b in blocks if b['is_active']]),
+            }
+        }, status=status.HTTP_200_OK)
+
+    def put(self, request):
+        user = request.user
+        page = get_or_create_link_in_bio_page(user)
+
+        data = request.data
+        if 'title' in data:
+            page.title = data['title']
+        if 'bio' in data:
+            page.bio = data['bio']
+        if 'profile_image_url' in data:
+            page.profile_image_url = data['profile_image_url']
+        if 'banner_image_url' in data:
+            page.banner_image_url = data['banner_image_url']
+        if 'theme_id' in data:
+            page.theme_id = data['theme_id']
+        if 'custom_theme' in data:
+            page.custom_theme = data['custom_theme']
+        if 'social_accounts' in data:
+            page.social_accounts = data['social_accounts']
+        if 'social_display_mode' in data:
+            page.social_display_mode = data['social_display_mode']
+        if 'smart_redirect_enabled' in data:
+            page.smart_redirect_enabled = bool(data['smart_redirect_enabled'])
+        if 'smart_input_placeholder' in data:
+            page.smart_input_placeholder = data['smart_input_placeholder']
+        if 'smart_input_button_text' in data:
+            page.smart_input_button_text = data['smart_input_button_text']
+        if 'smart_input_title' in data:
+            page.smart_input_title = data['smart_input_title']
+        if 'is_published' in data:
+            page.is_published = bool(data['is_published'])
+
+        if 'username' in data:
+            new_username = str(data['username']).strip().lstrip('@').lower()
+            new_username = re.sub(r'[^a-z0-9._-]', '', new_username)
+            if not new_username or len(new_username) < 2:
+                return Response({'error': 'Username must be at least 2 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+            if new_username != page.username:
+                if LinkInBioPage.objects.filter(username__iexact=new_username).exclude(id=page.id).exists():
+                    return Response({'error': f'@{new_username} is already taken. Please choose another username.'}, status=status.HTTP_400_BAD_REQUEST)
+                page.username = new_username
+
+        page.save()
+        return Response({'page': serialize_page(page), 'message': 'Link-in-Bio updated successfully.'}, status=status.HTTP_200_OK)
+
+
+class LinkInBioBlocksView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        page = get_or_create_link_in_bio_page(user)
+        blocks = [serialize_block(b) for b in page.blocks.all().order_by('order', 'created_at')]
+        return Response({'blocks': blocks}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        user = request.user
+        page = get_or_create_link_in_bio_page(user)
+        data = request.data
+
+        max_order = page.blocks.all().aggregate(models.Max('order'))['order__max']
+        next_order = 0 if max_order is None else (max_order + 1)
+
+        block = LinkInBioBlock.objects.create(
+            page=page,
+            block_type=data.get('block_type', 'link'),
+            title=data.get('title', ''),
+            subtitle=data.get('subtitle', ''),
+            url=data.get('url', ''),
+            media_url=data.get('media_url', ''),
+            config=data.get('config', {}),
+            order=next_order,
+            is_active=data.get('is_active', True)
+        )
+        return Response({'block': serialize_block(block), 'message': 'Block created successfully.'}, status=status.HTTP_201_CREATED)
+
+    def put(self, request, block_id=None):
+        user = request.user
+        page = get_or_create_link_in_bio_page(user)
+        target_id = block_id or request.data.get('id')
+        if not target_id:
+            return Response({'error': 'Block ID required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            block = page.blocks.get(id=target_id)
+        except LinkInBioBlock.DoesNotExist:
+            return Response({'error': 'Block not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data
+        if 'title' in data:
+            block.title = data['title']
+        if 'subtitle' in data:
+            block.subtitle = data['subtitle']
+        if 'url' in data:
+            block.url = data['url']
+        if 'media_url' in data:
+            block.media_url = data['media_url']
+        if 'config' in data:
+            block.config = data['config']
+        if 'block_type' in data:
+            block.block_type = data['block_type']
+        if 'is_active' in data:
+            block.is_active = bool(data['is_active'])
+        if 'order' in data:
+            block.order = int(data['order'])
+
+        block.save()
+        return Response({'block': serialize_block(block), 'message': 'Block updated successfully.'}, status=status.HTTP_200_OK)
+
+    def delete(self, request, block_id=None):
+        user = request.user
+        page = get_or_create_link_in_bio_page(user)
+        target_id = block_id or request.data.get('id')
+        if not target_id:
+            return Response({'error': 'Block ID required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            block = page.blocks.get(id=target_id)
+            block.delete()
+            return Response({'message': 'Block deleted successfully.'}, status=status.HTTP_200_OK)
+        except LinkInBioBlock.DoesNotExist:
+            return Response({'error': 'Block not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class LinkInBioBlocksReorderView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        page = get_or_create_link_in_bio_page(user)
+        block_ids = request.data.get('block_ids', [])
+        if not isinstance(block_ids, list):
+            return Response({'error': 'block_ids must be a list'}, status=status.HTTP_400_BAD_REQUEST)
+
+        for index, b_id in enumerate(block_ids):
+            page.blocks.filter(id=b_id).update(order=index)
+
+        blocks = [serialize_block(b) for b in page.blocks.all().order_by('order', 'created_at')]
+        return Response({'blocks': blocks, 'message': 'Blocks reordered successfully.'}, status=status.HTTP_200_OK)
+
+
+class LinkInBioRedirectRulesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        page = get_or_create_link_in_bio_page(user)
+        rules = [serialize_redirect_rule(r) for r in page.redirect_rules.all()]
+        return Response({'redirect_rules': rules}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        user = request.user
+        page = get_or_create_link_in_bio_page(user)
+        data = request.data
+
+        input_url = data.get('input_match_url', '').strip()
+        if not input_url:
+            return Response({'error': 'Input Reel URL or keyword is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        rule = LinkInBioRedirectRule.objects.create(
+            page=page,
+            title=data.get('title', ''),
+            input_match_url=input_url,
+            match_type=data.get('match_type', 'reel_code'),
+            destination_type=data.get('destination_type', 'url'),
+            destination_value=data.get('destination_value', ''),
+            destination_title=data.get('destination_title', ''),
+            is_active=data.get('is_active', True)
+        )
+        return Response({'rule': serialize_redirect_rule(rule), 'message': 'Redirect rule created successfully.'}, status=status.HTTP_201_CREATED)
+
+    def put(self, request, rule_id=None):
+        user = request.user
+        page = get_or_create_link_in_bio_page(user)
+        target_id = rule_id or request.data.get('id')
+        if not target_id:
+            return Response({'error': 'Rule ID required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            rule = page.redirect_rules.get(id=target_id)
+        except LinkInBioRedirectRule.DoesNotExist:
+            return Response({'error': 'Redirect rule not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data
+        if 'title' in data:
+            rule.title = data['title']
+        if 'input_match_url' in data:
+            rule.input_match_url = data['input_match_url']
+        if 'match_type' in data:
+            rule.match_type = data['match_type']
+        if 'destination_type' in data:
+            rule.destination_type = data['destination_type']
+        if 'destination_value' in data:
+            rule.destination_value = data['destination_value']
+        if 'destination_title' in data:
+            rule.destination_title = data['destination_title']
+        if 'is_active' in data:
+            rule.is_active = bool(data['is_active'])
+
+        rule.save()
+        return Response({'rule': serialize_redirect_rule(rule), 'message': 'Redirect rule updated successfully.'}, status=status.HTTP_200_OK)
+
+    def delete(self, request, rule_id=None):
+        user = request.user
+        page = get_or_create_link_in_bio_page(user)
+        target_id = rule_id or request.data.get('id')
+        if not target_id:
+            return Response({'error': 'Rule ID required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            rule = page.redirect_rules.get(id=target_id)
+            rule.delete()
+            return Response({'message': 'Redirect rule deleted successfully.'}, status=status.HTTP_200_OK)
+        except LinkInBioRedirectRule.DoesNotExist:
+            return Response({'error': 'Redirect rule not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class LinkInBioUsernameCheckView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        username = request.query_params.get('username', '').strip().lstrip('@').lower()
+        clean_user = re.sub(r'[^a-z0-9._-]', '', username)
+
+        if not clean_user or len(clean_user) < 2:
+            return Response({'available': False, 'username': clean_user, 'reason': 'Minimum 2 characters required.'}, status=status.HTTP_200_OK)
+
+        user_page = LinkInBioPage.objects.filter(user=request.user).first()
+        current_page_id = user_page.id if user_page else None
+
+        exists = LinkInBioPage.objects.filter(username__iexact=clean_user).exclude(id=current_page_id).exists()
+        return Response({
+            'available': not exists,
+            'username': clean_user,
+            'reason': 'Username already taken' if exists else 'Username is available'
+        }, status=status.HTTP_200_OK)
+
+
+class PublicLinkInBioView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, username):
+        clean_username = username.strip().lstrip('@').lower()
+
+        page = LinkInBioPage.objects.filter(username__iexact=clean_username).first()
+        if not page:
+            page = LinkInBioPage.objects.filter(instagram_account__username__iexact=clean_username).first()
+        if not page:
+            page = LinkInBioPage.objects.filter(user__username__iexact=clean_username).first()
+
+        if not page:
+            return Response({'error': f'No Link-in-Bio page found for @{clean_username}'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Increment views atomically
+        LinkInBioPage.objects.filter(id=page.id).update(views_count=models.F('views_count') + 1)
+        LinkInBioAnalyticsEvent.objects.create(
+            page=page,
+            event_type='page_view',
+            metadata={'ip': request.META.get('REMOTE_ADDR', ''), 'user_agent': request.META.get('HTTP_USER_AGENT', '')}
+        )
+
+        active_blocks = [serialize_block(b) for b in page.blocks.filter(is_active=True).order_by('order', 'created_at')]
+
+        creator_info = {
+            'username': page.username,
+            'full_name': page.title or page.username,
+            'profile_picture_url': page.profile_image_url,
+        }
+        if page.instagram_account:
+            creator_info['instagram_username'] = page.instagram_account.username
+            if not creator_info['profile_picture_url']:
+                creator_info['profile_picture_url'] = page.instagram_account.profile_picture_url
+
+        return Response({
+            'page': serialize_page(page),
+            'blocks': active_blocks,
+            'creator': creator_info
+        }, status=status.HTTP_200_OK)
+
+
+class PublicLinkInBioResolveRedirectView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request, username):
+        clean_username = username.strip().lstrip('@').lower()
+        page = LinkInBioPage.objects.filter(username__iexact=clean_username).first()
+        if not page:
+            page = LinkInBioPage.objects.filter(instagram_account__username__iexact=clean_username).first()
+        if not page:
+            return Response({'found': False, 'message': f'Page @{clean_username} not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        raw_input = request.data.get('input_url', '').strip()
+        if not raw_input:
+            return Response({'found': False, 'message': 'Please enter or paste a URL or keyword.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        input_shortcode = extract_reel_code(raw_input)
+        clean_input = raw_input.lower().split('?')[0].rstrip('/')
+
+        active_rules = page.redirect_rules.filter(is_active=True)
+        matched_rule = None
+
+        # 1. Match by Reel/Post shortcode if available (case-insensitive)
+        if input_shortcode:
+            for rule in active_rules:
+                rule_shortcode = extract_reel_code(rule.input_match_url)
+                if rule_shortcode and rule_shortcode.lower() == input_shortcode.lower():
+                    matched_rule = rule
+                    break
+
+        # 2. Case-insensitive matching across clean URLs, exact text, shortcodes, and keywords
+        if not matched_rule:
+            for rule in active_rules:
+                rule_raw = rule.input_match_url.strip()
+                rule_clean = rule_raw.lower().split('?')[0].rstrip('/')
+                rule_shortcode = extract_reel_code(rule_raw)
+
+                # Match by shortcode
+                if input_shortcode and rule_shortcode and rule_shortcode.lower() == input_shortcode.lower():
+                    matched_rule = rule
+                    break
+
+                # Match exact or clean URL (case-insensitive)
+                if rule_clean == clean_input or rule_raw.lower() == raw_input.lower():
+                    matched_rule = rule
+                    break
+
+                # Match contains keyword or substring (case-insensitive)
+                if rule_clean and (rule_clean in clean_input or clean_input in rule_clean):
+                    matched_rule = rule
+                    break
+                if rule_raw.lower() in raw_input.lower() or raw_input.lower() in rule_raw.lower():
+                    matched_rule = rule
+                    break
+
+        if matched_rule:
+            LinkInBioRedirectRule.objects.filter(id=matched_rule.id).update(hits_count=models.F('hits_count') + 1)
+            LinkInBioPage.objects.filter(id=page.id).update(clicks_count=models.F('clicks_count') + 1)
+            LinkInBioAnalyticsEvent.objects.create(
+                page=page,
+                redirect_rule=matched_rule,
+                event_type='redirect_hit',
+                metadata={'input': raw_input, 'ip': request.META.get('REMOTE_ADDR', '')}
+            )
+
+            return Response({
+                'found': True,
+                'destination_type': matched_rule.destination_type,
+                'destination_value': matched_rule.destination_value,
+                'destination_title': matched_rule.destination_title or matched_rule.title or 'Here is your link!',
+                'rule_title': matched_rule.title,
+            }, status=status.HTTP_200_OK)
+
+        return Response({
+            'found': False,
+            'message': "We couldn't find a direct link matching this Reel. Please check out the links below on this page!",
+        }, status=status.HTTP_200_OK)
+
+
+class PublicLinkInBioTrackView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request, username):
+        clean_username = username.strip().lstrip('@').lower()
+        page = LinkInBioPage.objects.filter(username__iexact=clean_username).first()
+        if not page:
+            page = LinkInBioPage.objects.filter(instagram_account__username__iexact=clean_username).first()
+        if not page:
+            return Response({'status': 'ok'}, status=status.HTTP_200_OK)
+
+        event_type = request.data.get('event_type', 'block_click')
+        block_id = request.data.get('block_id')
+
+        block_obj = None
+        if block_id:
+            block_obj = page.blocks.filter(id=block_id).first()
+            if block_obj:
+                LinkInBioBlock.objects.filter(id=block_obj.id).update(clicks_count=models.F('clicks_count') + 1)
+
+        LinkInBioPage.objects.filter(id=page.id).update(clicks_count=models.F('clicks_count') + 1)
+        LinkInBioAnalyticsEvent.objects.create(
+            page=page,
+            block=block_obj,
+            event_type=event_type,
+            metadata=request.data
+        )
+
+        return Response({'status': 'recorded'}, status=status.HTTP_200_OK)
+

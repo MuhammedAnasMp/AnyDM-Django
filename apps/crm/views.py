@@ -2387,7 +2387,8 @@ class CheckoutView(APIView):
                     ).exists()
 
                     if has_recent_inbound:
-                        msg_text = f"Hi {customer_name}! Your order {order_id} is successfully placed. Track status: http://172.16.4.167:3000/track/{order_id}"
+                        frontend_host = os.getenv("FRONTEND_HOST", "zoyee.in")
+                        msg_text = f"Hi {customer_name}! Your order {order_id} is successfully placed. Track status: https://{frontend_host}/track/{order_id}"
                         send_instagram_dm(account, customer.instagram_scoped_id, {
                                           "text": msg_text}, dm_format="text")
             except Exception as dm_err:
@@ -2464,7 +2465,8 @@ class ConfirmPaymentView(APIView):
                 ).exists()
 
                 if has_recent_inbound:
-                    msg_text = f"Hi {order.customer_name}! Your payment for order {order_id} has been verified and confirmed. Track status: http://172.16.4.167:3000/track/{order_id}"
+                    frontend_host = os.getenv("FRONTEND_HOST", "zoyee.in")
+                    msg_text = f"Hi {order.customer_name}! Your payment for order {order_id} has been verified and confirmed. Track status: https://{frontend_host}/track/{order_id}"
                     send_instagram_dm(order.instagram_account, customer.instagram_scoped_id, {
                                       "text": msg_text}, dm_format="text")
         except Exception as dm_err:

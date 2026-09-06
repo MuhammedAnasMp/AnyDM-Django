@@ -42,13 +42,23 @@ class User(AbstractUser):
     official_follow_points_awarded = models.IntegerField(default=0)
     official_follow_at = models.DateTimeField(null=True, blank=True)
     official_unfollow_at = models.DateTimeField(null=True, blank=True)
+    creator_program_expires_at = models.DateTimeField(null=True, blank=True)
+
+    @property
+    def is_creator_program_active(self):
+        from django.utils import timezone
+        if not self.is_creator_vip:
+            return False
+        if self.creator_program_expires_at:
+            return self.creator_program_expires_at > timezone.now()
+        return True
 
     @property
     def is_premium_active(self):
         from django.utils import timezone
         if self.plan == 'pro':
             if self.premium_expires_at:
-                return timezone.now() < self.premium_expires_at
+                return self.premium_expires_at > timezone.now()
             return True
         if self.trial_start_date:
             expiry = self.trial_start_date + timezone.timedelta(days=self.trial_days)
@@ -291,4 +301,135 @@ class CreatorCommission(models.Model):
 
 
 # SystemSettings has been moved to apps.settings.models
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LINK-IN-BIO MODELS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LinkInBioPage(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='link_in_bio_pages', null=True, blank=True)
+    instagram_account = models.ForeignKey(InstagramAccount, on_delete=models.SET_NULL, null=True, blank=True, related_name='link_in_bio_pages')
+    
+    username = models.CharField(max_length=100, unique=True, db_index=True)
+    title = models.CharField(max_length=255, blank=True, default='')
+    bio = models.TextField(blank=True, default='')
+    profile_image_url = models.URLField(max_length=2000, blank=True, null=True)
+    banner_image_url = models.URLField(max_length=2000, blank=True, null=True)
+    
+    # Theme & Visual Styling
+    theme_id = models.CharField(max_length=50, default='glass_monochrome')
+    custom_theme = models.JSONField(default=dict, blank=True)
+    
+    # Social Hub
+    social_accounts = models.JSONField(default=list, blank=True)
+    social_display_mode = models.CharField(max_length=30, default='icons_top') # 'icons_top', 'icons_bottom', 'cards', 'hidden'
+    
+    # Smart Reel / URL Redirect Feature
+    smart_redirect_enabled = models.BooleanField(default=True)
+    smart_input_placeholder = models.CharField(max_length=255, default='Paste your Reel URL here...')
+    smart_input_button_text = models.CharField(max_length=50, default='Get Link')
+    smart_input_title = models.CharField(max_length=255, default='Have a Reel or Promo Link?')
+    
+    is_published = models.BooleanField(default=True)
+    views_count = models.PositiveIntegerField(default=0)
+    clicks_count = models.PositiveIntegerField(default=0)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Link-in-Bio @{self.username}"
+
+
+class LinkInBioBlock(models.Model):
+    BLOCK_TYPES = [
+        ('link', 'Standard Link'),
+        ('header', 'Heading / Text'),
+        ('video', 'Embedded Video'),
+        ('image', 'Image Banner'),
+        ('social_group', 'Social Links Group'),
+        ('smart_redirect', 'Smart Redirect Box'),
+        ('product_card', 'Product Showcase'),
+        ('file_download', 'File Download'),
+        ('contact_card', 'Contact Information'),
+        ('custom_button', 'Custom Action Button'),
+    ]
+
+    page = models.ForeignKey(LinkInBioPage, on_delete=models.CASCADE, related_name='blocks')
+    block_type = models.CharField(max_length=40, choices=BLOCK_TYPES, default='link')
+    title = models.CharField(max_length=255, blank=True, default='')
+    subtitle = models.CharField(max_length=255, blank=True, default='')
+    url = models.URLField(max_length=2000, blank=True, default='')
+    media_url = models.URLField(max_length=2000, blank=True, default='')
+    config = models.JSONField(default=dict, blank=True)
+    order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    clicks_count = models.PositiveIntegerField(default=0)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['order', 'created_at']
+
+    def __str__(self):
+        return f"[{self.block_type}] {self.title or 'Untitled'} (Page @{self.page.username})"
+
+
+class LinkInBioRedirectRule(models.Model):
+    MATCH_TYPES = [
+        ('reel_code', 'Reel / Post Shortcode (Auto)'),
+        ('exact', 'Exact URL Match'),
+        ('contains', 'Contains Keyword / Substring'),
+    ]
+
+    DESTINATION_TYPES = [
+        ('url', 'Destination Website URL'),
+        ('file', 'File / Download'),
+        ('product', 'Specific Product'),
+        ('message', 'Custom Popup Message'),
+    ]
+
+    page = models.ForeignKey(LinkInBioPage, on_delete=models.CASCADE, related_name='redirect_rules')
+    title = models.CharField(max_length=255, blank=True, default='')
+    input_match_url = models.CharField(max_length=1000)
+    match_type = models.CharField(max_length=20, choices=MATCH_TYPES, default='reel_code')
+    destination_type = models.CharField(max_length=30, choices=DESTINATION_TYPES, default='url')
+    destination_value = models.TextField()
+    destination_title = models.CharField(max_length=255, blank=True, default='')
+    is_active = models.BooleanField(default=True)
+    hits_count = models.PositiveIntegerField(default=0)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Redirect: {self.input_match_url} -> {self.destination_value} (@{self.page.username})"
+
+
+class LinkInBioAnalyticsEvent(models.Model):
+    EVENT_TYPES = [
+        ('page_view', 'Page View'),
+        ('block_click', 'Block Click'),
+        ('redirect_hit', 'Smart Redirect Used'),
+        ('social_click', 'Social Icon Click'),
+    ]
+
+    page = models.ForeignKey(LinkInBioPage, on_delete=models.CASCADE, related_name='analytics_events')
+    block = models.ForeignKey(LinkInBioBlock, on_delete=models.SET_NULL, null=True, blank=True)
+    redirect_rule = models.ForeignKey(LinkInBioRedirectRule, on_delete=models.SET_NULL, null=True, blank=True)
+    event_type = models.CharField(max_length=30, choices=EVENT_TYPES)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.event_type} on @{self.page.username} at {self.created_at}"
+
 

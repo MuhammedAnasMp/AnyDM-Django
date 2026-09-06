@@ -50,6 +50,18 @@ class SystemSettings(models.Model):
     global_cod_enabled = models.BooleanField(default=True)
     default_commission_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=10.00)
 
+    # 🎁 Creator VIP Free Pro Program
+    creator_vip_extended_trial_days = models.IntegerField(default=15)
+    creator_vip_points_per_paid_sub = models.IntegerField(default=20)
+    creator_vip_max_redemption_months = models.IntegerField(default=5)
+    creator_vip_default_term_months = models.IntegerField(default=3)
+
+    # 💰 Creator Commission Earnings Program
+    creator_commission_percent = models.DecimalField(max_digits=5, decimal_places=2, default=10.00)
+    creator_min_payout_amount = models.DecimalField(max_digits=10, decimal_places=2, default=500.00)
+    creator_payout_cycle_days = models.IntegerField(default=30)
+    creator_commission_default_term_months = models.IntegerField(default=6)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
