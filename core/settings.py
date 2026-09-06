@@ -28,7 +28,7 @@ SECRET_KEY = 'django-insecure-5c5y^ry^y$!&nj@it%&iegdn&6-moi=x^(!ja0_1-7@r2%&$k^
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-FRONTEND_HOST = os.getenv("FRONTEND_HOST", "zoyee.in")
+FRONTEND_HOST = os.getenv("FRONTEND_HOST", "any-dm-next-js.vercel.app")
 BACKEND_HOST = os.getenv("BACKEND_HOST", "localapi.locanydm.online")
 
 ALLOWED_HOSTS = ["*"]
@@ -68,6 +68,8 @@ CORS_ALLOWED_ORIGINS = [
     f'http://{BACKEND_HOST}',
     "https://zoyee.in",
     "http://zoyee.in",
+    "https://any-dm-next-js.vercel.app",
+    "http://any-dm-next-js.vercel.app",
     "https://localapi.locanydm.online",
     "http://localapi.locanydm.online",
     "https://api.locanydm.online",
@@ -81,6 +83,8 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http:\/\/.*\.zoyee\.in$",
     r"^https:\/\/.*\.locanydm\.online$",
     r"^http:\/\/.*\.locanydm\.online$",
+    r"^https:\/\/.*\.vercel\.app$",
+    r"^http:\/\/.*\.vercel\.app$",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -95,6 +99,8 @@ CSRF_TRUSTED_ORIGINS = [
     "https://zoyee.in",
     "http://zoyee.in",
     "https://*.zoyee.in",
+    "https://any-dm-next-js.vercel.app",
+    "https://*.vercel.app",
     "https://localapi.locanydm.online",
     "http://localapi.locanydm.online",
     "https://*.locanydm.online",
