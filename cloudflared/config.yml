@@ -1,14 +1,21 @@
 tunnel: 581546da-4698-416a-8bef-a5f349941ef0
 credentials-file: /etc/cloudflared/581546da-4698-416a-8bef-a5f349941ef0.json
 
+originRequest:
+  connectTimeout: 30s
+  tcpKeepAlive: 30s
+  keepAliveTimeout: 90s
+  keepAliveConnections: 5000
+  noHappyEyeballs: true
+
 ingress:
   - hostname: localapi.locanydm.online
     service: http://host.docker.internal:8004
 
   - hostname: api.locanydm.online
-    service: http://web:8005
+    service: http://nginx:80
 
   - hostname: wb.locanydm.online
-    service: http://webhook:8006
+    service: http://nginx:80
 
   - service: http_status:404
