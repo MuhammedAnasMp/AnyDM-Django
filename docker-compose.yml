@@ -1,6 +1,13 @@
 services:
   web:
     build: .
+    # =========================================================================
+    # CAPACITY LEVEL PRESETS (Uncomment the level you want to active)
+    # Level 1 (Lightweight / Dev): --workers 4 --worker-connections 4000 --backlog 4096
+    # Level 2 (Current Production Recommended - Active): --workers 8 --worker-connections 10000 --backlog 20480
+    # Level 3 (High Scale - 25k Creators): --workers 16 --worker-connections 20000 --backlog 40960
+    # Level 4 (GOD MODE - 100k+ Creators): --workers 24 --worker-connections 40000 --backlog 65535
+    # =========================================================================
     command: gunicorn core.asgi:application -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8005 --workers 8 --worker-connections 10000 --backlog 20480
     volumes:
       - .:/app
@@ -22,6 +29,12 @@ services:
 
   webhook:
     build: .
+    # =========================================================================
+    # Level 1: --workers 2 --worker-connections 4000 --backlog 4096
+    # Level 2 (Current Active): --workers 4 --worker-connections 10000 --backlog 20480
+    # Level 3: --workers 8 --worker-connections 20000 --backlog 40960
+    # Level 4 (GOD MODE): --workers 12 --worker-connections 40000 --backlog 65535
+    # =========================================================================
     command: gunicorn core.asgi:application -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8006 --workers 4 --worker-connections 10000 --backlog 20480
     volumes:
       - .:/app
@@ -42,6 +55,12 @@ services:
 
   celery:
     build: .
+    # =========================================================================
+    # Level 1: --concurrency=4
+    # Level 2 (Current Active): --concurrency=8
+    # Level 3: --concurrency=16
+    # Level 4 (GOD MODE): --concurrency=24
+    # =========================================================================
     command: celery -A core worker --loglevel=info --concurrency=8
     volumes:
       - .:/app
@@ -70,6 +89,9 @@ services:
 
   redis:
     image: redis:7
+    # Level 1 & 2 (Active): 2gb
+    # Level 3: 4gb (redis-server --maxmemory 4gb --maxmemory-policy allkeys-lru)
+    # Level 4 (GOD MODE): 8gb (redis-server --maxmemory 8gb --maxmemory-policy allkeys-lru)
     command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"
@@ -77,6 +99,12 @@ services:
   db:
     image: mysql:8
     restart: unless-stopped
+    # =========================================================================
+    # Level 1: --innodb_buffer_pool_size=1G --max_connections=250
+    # Level 2 (Current Active): --innodb_buffer_pool_size=2G --max_connections=1000
+    # Level 3: --innodb_buffer_pool_size=4G --max_connections=2500
+    # Level 4 (GOD MODE): --innodb_buffer_pool_size=8G --max_connections=5000
+    # =========================================================================
     command: --innodb_buffer_pool_size=2G --max_connections=1000 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     environment:
       MYSQL_DATABASE: anydm_db
