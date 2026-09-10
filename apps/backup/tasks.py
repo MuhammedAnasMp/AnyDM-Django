@@ -91,7 +91,7 @@ def backup_mysql_to_neon(self):
             return {"status": "error", "reason": "PostgreSQL driver (psycopg/psycopg2) not installed"}
 
     engine = _get_db_engine()
-    logger.info(f"[BACKUP] Source: {engine.upper()} → Neon PostgreSQL (Singapore)")
+    logger.info(f"[BACKUP] Source: {engine.upper()} → Target: {NEON_PG_URL[:30]}...")
 
     # Create a log entry immediately so admin shows "Running"
     from .models import BackupLog
@@ -104,11 +104,7 @@ def backup_mysql_to_neon(self):
     stats = {"tables": 0, "rows": 0, "skipped": 0, "errors": []}
 
     try:
-        if has_psycopg3:
-            neon = psycopg.connect(NEON_PG_URL, autocommit=False)
-        else:
-            neon = psycopg.connect(NEON_PG_URL)
-            neon.autocommit = False
+        target_conn, target_engine = _connect_target_db(NEON_PG_URL)
     except Exception as e:
         logger.error(f"[BACKUP] Connection failed: {e}")
         log.status = BackupLog.Status.ERROR
@@ -139,64 +135,103 @@ def backup_mysql_to_neon(self):
                     cur.execute(f"SELECT * FROM {quoted}")
                     rows = cur.fetchall()
 
-                with neon.cursor() as pg_cur:
-                    _ensure_pg_table(pg_cur, table, cols, rows)
-                    if rows:
-                        col_list     = ", ".join(f'"{c}"' for c in cols)
-                        placeholders = ", ".join(["%s"] * len(cols))
-                        
-                        # Dynamically determine column types for PostgreSQL
-                        numeric_cols = set()
-                        boolean_cols = set()
-                        timestamp_cols = set()
-                        for col_idx, c in enumerate(cols):
-                            col_type = _detect_col_type(c, [r[col_idx] for r in rows])
-                            if "BIGINT" in col_type:
-                                numeric_cols.add(col_idx)
-                            elif "BOOLEAN" in col_type:
-                                boolean_cols.add(col_idx)
-                            elif "TIMESTAMPTZ" in col_type:
-                                timestamp_cols.add(col_idx)
+                with target_conn.cursor() as target_cur:
+                    if target_engine == "postgresql":
+                        _ensure_pg_table(target_cur, table, cols, rows)
+                        if rows:
+                            col_list     = ", ".join(f'"{c}"' for c in cols)
+                            placeholders = ", ".join(["%s"] * len(cols))
+                            
+                            numeric_cols = set()
+                            boolean_cols = set()
+                            timestamp_cols = set()
+                            for col_idx, c in enumerate(cols):
+                                col_type = _detect_col_type(c, [r[col_idx] for r in rows])
+                                if "BIGINT" in col_type:
+                                    numeric_cols.add(col_idx)
+                                elif "BOOLEAN" in col_type:
+                                    boolean_cols.add(col_idx)
+                                elif "TIMESTAMPTZ" in col_type:
+                                    timestamp_cols.add(col_idx)
 
-                        safe_rows = []
-                        for row in rows:
-                            formatted_row = []
-                            for col_idx, v in enumerate(row):
-                                if v is None or v == "":
-                                    formatted_row.append(None)
-                                elif col_idx in boolean_cols:
-                                    formatted_row.append(True if str(v).strip().lower() in ("true", "1", "t") else False)
-                                elif col_idx in timestamp_cols:
-                                    formatted_row.append(str(v).strip())
-                                elif col_idx in numeric_cols:
-                                    val_str = str(v).strip().lstrip("-")
-                                    formatted_row.append(int(v) if val_str.isdigit() else None)
-                                else:
-                                    formatted_row.append(str(v))
-                            safe_rows.append(tuple(formatted_row))
+                            safe_rows = []
+                            for row in rows:
+                                formatted_row = []
+                                for col_idx, v in enumerate(row):
+                                    if v is None or v == "":
+                                        formatted_row.append(None)
+                                    elif col_idx in boolean_cols:
+                                        formatted_row.append(True if str(v).strip().lower() in ("true", "1", "t") else False)
+                                    elif col_idx in timestamp_cols:
+                                        formatted_row.append(str(v).strip())
+                                    elif col_idx in numeric_cols:
+                                        val_str = str(v).strip().lstrip("-")
+                                        formatted_row.append(int(v) if val_str.isdigit() else None)
+                                    else:
+                                        formatted_row.append(str(v))
+                                safe_rows.append(tuple(formatted_row))
 
-                        pg_cur.executemany(
-                            f'INSERT INTO "{table}" ({col_list}) VALUES ({placeholders})',
-                            safe_rows
-                        )
-                        # Sync sequence for auto-increment ID column
-                        if "id" in cols:
-                            pg_cur.execute(f"""
-                                SELECT setval(pg_get_serial_sequence('"{table}"', 'id'), COALESCE(MAX("id"), 1)) FROM "{table}"
-                            """)
+                            target_cur.executemany(
+                                f'INSERT INTO "{table}" ({col_list}) VALUES ({placeholders})',
+                                safe_rows
+                            )
+                            if "id" in cols:
+                                target_cur.execute(f"""
+                                    SELECT setval(pg_get_serial_sequence('"{table}"', 'id'), COALESCE(MAX("id"), 1)) FROM "{table}"
+                                """)
+                    else:
+                        # MySQL target
+                        _ensure_mysql_table(target_cur, table, cols, rows)
+                        if rows:
+                            col_list     = ", ".join(f'`{c}`' for c in cols)
+                            placeholders = ", ".join(["%s"] * len(cols))
 
-                neon.commit()
+                            numeric_cols = set()
+                            boolean_cols = set()
+                            timestamp_cols = set()
+                            for col_idx, c in enumerate(cols):
+                                col_type = _detect_col_type(c, [r[col_idx] for r in rows])
+                                if "BIGINT" in col_type:
+                                    numeric_cols.add(col_idx)
+                                elif "BOOLEAN" in col_type:
+                                    boolean_cols.add(col_idx)
+                                elif "TIMESTAMPTZ" in col_type:
+                                    timestamp_cols.add(col_idx)
+
+                            safe_rows = []
+                            for row in rows:
+                                formatted_row = []
+                                for col_idx, v in enumerate(row):
+                                    if v is None or v == "":
+                                        formatted_row.append(None)
+                                    elif col_idx in boolean_cols:
+                                        formatted_row.append(1 if str(v).strip().lower() in ("true", "1", "t") else 0)
+                                    elif col_idx in timestamp_cols:
+                                        formatted_row.append(str(v).strip()[:19])
+                                    elif col_idx in numeric_cols:
+                                        val_str = str(v).strip().lstrip("-")
+                                        formatted_row.append(int(v) if val_str.isdigit() else None)
+                                    else:
+                                        formatted_row.append(str(v))
+                                safe_rows.append(tuple(formatted_row))
+
+                            target_cur.executemany(
+                                f'INSERT INTO `{table}` ({col_list}) VALUES ({placeholders})',
+                                safe_rows
+                            )
+
+                target_conn.commit()
                 stats["tables"] += 1
                 stats["rows"]   += len(rows)
                 logger.info(f"[BACKUP]   {table}: {len(rows)} rows OK")
 
             except Exception as e:
-                neon.rollback()
+                target_conn.rollback()
                 stats["errors"].append({"table": table, "error": str(e)})
                 logger.warning(f"[BACKUP]   SKIP {table}: {e}")
 
     finally:
-        neon.close()
+        target_conn.close()
 
     status = "success" if not stats["errors"] else "partial"
 
@@ -285,3 +320,60 @@ def _ensure_pg_table(pg_cur, table, cols, rows):
             {", ".join(col_defs)}
         )
     """)
+
+
+def _ensure_mysql_table(mysql_cur, table, cols, rows):
+    """Recreates table in MySQL target DB with proper types."""
+    mysql_cur.execute("SET FOREIGN_KEY_CHECKS = 0;")
+    mysql_cur.execute(f"DROP TABLE IF EXISTS `{table}`")
+    col_defs = []
+    for col_idx, c in enumerate(cols):
+        col_vals = [r[col_idx] for r in rows] if rows else []
+        col_type = _detect_col_type(c, col_vals)
+        if c == "id":
+            col_defs.append("`id` BIGINT AUTO_INCREMENT PRIMARY KEY")
+        elif "BOOLEAN" in col_type:
+            col_defs.append(f"`{c}` TINYINT(1) NULL")
+        elif "BIGINT" in col_type:
+            col_defs.append(f"`{c}` BIGINT NULL")
+        elif "TIMESTAMPTZ" in col_type:
+            col_defs.append(f"`{c}` DATETIME NULL")
+        else:
+            col_defs.append(f"`{c}` LONGTEXT NULL")
+
+    mysql_cur.execute(f"CREATE TABLE `{table}` ({', '.join(col_defs)}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
+    mysql_cur.execute("SET FOREIGN_KEY_CHECKS = 1;")
+
+
+def _connect_target_db(target_url):
+    """
+    Connects to target DB (PostgreSQL or MySQL) from target_url.
+    Returns: (target_conn, target_engine_type)
+    """
+    import dj_database_url
+    config = dj_database_url.parse(target_url)
+    engine = config.get("ENGINE", "")
+
+    if "postgresql" in engine or target_url.startswith("postgres"):
+        try:
+            import psycopg
+            conn = psycopg.connect(target_url, autocommit=False)
+        except ImportError:
+            import psycopg2 as psycopg
+            conn = psycopg.connect(target_url)
+            conn.autocommit = False
+        return conn, "postgresql"
+    elif "mysql" in engine or target_url.startswith("mysql"):
+        import MySQLdb
+        conn = MySQLdb.connect(
+            host=config.get("HOST") or "127.0.0.1",
+            port=int(config.get("PORT") or 3306),
+            user=config.get("USER") or "root",
+            passwd=config.get("PASSWORD") or "",
+            db=config.get("NAME") or "",
+            charset="utf8mb4",
+        )
+        conn.autocommit(False)
+        return conn, "mysql"
+    else:
+        raise ValueError(f"Unsupported backup DB engine in URL: {target_url}")
