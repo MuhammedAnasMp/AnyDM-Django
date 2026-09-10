@@ -258,15 +258,8 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_BACKEND = "django-db"
 
-# Nightly DB → Neon PG backup at 2:00 AM UTC
-from celery.schedules import crontab
+# Celery Beat uses DatabaseScheduler (managed via Django Admin & apps/backup/apps.py)
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
-CELERY_BEAT_SCHEDULE = {
-    "nightly-db-to-neon-backup": {
-        "task": "backup.mysql_to_neon",
-        "schedule": crontab(hour=2, minute=0),  # 2:00 AM UTC daily
-    },
-}
 
 CHANNEL_LAYERS = {
     'default': {

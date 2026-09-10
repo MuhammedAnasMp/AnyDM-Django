@@ -13,7 +13,10 @@ def ensure_periodic_tasks(sender, **kwargs):
     try:
         from django_celery_beat.models import PeriodicTask, CrontabSchedule
 
-        # 1. Ensure 2:00 AM UTC crontab schedule exists
+        # 1. Clean up old duplicate task name from settings.py if present
+        PeriodicTask.objects.filter(name="nightly-db-to-neon-backup").delete()
+
+        # 2. Ensure 2:00 AM UTC crontab schedule exists
         schedule, _ = CrontabSchedule.objects.get_or_create(
             minute="0",
             hour="2",
