@@ -10,11 +10,14 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+from datetime import timedelta
+from corsheaders.defaults import default_headers
+from corsheaders.defaults import default_headers, default_methods
+import dj_database_url
 from pathlib import Path
 import os
 from dotenv import load_dotenv
 load_dotenv()
-import dj_database_url
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -35,7 +38,6 @@ ALLOWED_HOSTS = ["*"]
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 
-from corsheaders.defaults import default_headers, default_methods
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'ngrok-skip-browser-warning',
@@ -58,28 +60,30 @@ CORS_ALLOW_METHODS = list(default_methods) + [
 ]
 
 CORS_ALLOWED_ORIGINS = [
-    "https://localhost:3000",
+
     "http://localhost:3000",
-    "https://127.0.0.1:3000",
+
     "http://127.0.0.1:3000",
+
     f'https://{FRONTEND_HOST}',
-    f'http://{FRONTEND_HOST}',
+
     f'https://{BACKEND_HOST}',
-    f'http://{BACKEND_HOST}',
+
     "https://zoyee.in",
-    "http://zoyee.in",
-    "https://any-dm-next-js.vercel.app",
-    "http://any-dm-next-js.vercel.app",
+
+
     "https://localapi.locanydm.online",
-    "http://localapi.locanydm.online",
+
+
     "https://api.locanydm.online",
-    "http://api.locanydm.online",
+
     "https://wb.locanydm.online",
-    "http://wb.locanydm.online",
+
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https:\/\/.*\.zoyee\.in$",
+    r"^https:\/\/.*\.anydm\.in$",
     r"^http:\/\/.*\.zoyee\.in$",
     r"^https:\/\/.*\.locanydm\.online$",
     r"^http:\/\/.*\.locanydm\.online$",
@@ -89,20 +93,16 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 
 CSRF_TRUSTED_ORIGINS = [
     "https://localhost:3000",
-    "http://localhost:3000",
     "https://127.0.0.1:3000",
-    "http://127.0.0.1:3000",
     f'https://{FRONTEND_HOST}',
-    f'http://{FRONTEND_HOST}',
     f'https://{BACKEND_HOST}',
-    f'http://{BACKEND_HOST}',
+
+    f'https://*.{FRONTEND_HOST}',
+    f'https://*.{BACKEND_HOST}',
     "https://zoyee.in",
-    "http://zoyee.in",
     "https://*.zoyee.in",
-    "https://any-dm-next-js.vercel.app",
     "https://*.vercel.app",
     "https://localapi.locanydm.online",
-    "http://localapi.locanydm.online",
     "https://*.locanydm.online",
 ]
 
@@ -110,12 +110,12 @@ CSRF_TRUSTED_ORIGINS = [
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 CSRF_COOKIE_SAMESITE = 'None'
 CSRF_COOKIE_SECURE = True
-CSRF_COOKIE_HTTPONLY = False # Allow JS to read the cookie
+CSRF_COOKIE_HTTPONLY = False  # Allow JS to read the cookie
 SESSION_COOKIE_SAMESITE = 'None'
 SESSION_COOKIE_SECURE = True
 
 # Application definition
- 
+
 INSTALLED_APPS = [
     'daphne',
     'django.contrib.admin',
@@ -186,7 +186,6 @@ if DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3':
         DATABASES['default']['NAME'] = BASE_DIR / db_name
 
 
-
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
@@ -225,12 +224,11 @@ STATIC_URL = "/static/"
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 CORS_ALLOW_ALL_ORIGINS = True
 
-from corsheaders.defaults import default_headers
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'ngrok-skip-browser-warning',
     'x-bypass-cache',
 ]
-  
+
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
@@ -240,7 +238,6 @@ REST_FRAMEWORK = {
     )
 }
 
-from datetime import timedelta
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
@@ -272,15 +269,13 @@ CHANNEL_LAYERS = {
         'CONFIG': {
             "hosts": [{
                 "address": os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-                "socket_timeout": None,  # Completely disable read timeouts on redis socket to prevent disconnects
+                # Completely disable read timeouts on redis socket to prevent disconnects
+                "socket_timeout": None,
             }],
         },
     },
 }
 
 
-
-
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
-
