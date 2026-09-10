@@ -136,16 +136,24 @@ def backup_mysql_to_neon(self):
                     rows = cur.fetchall()
 
                 with neon.cursor() as pg_cur:
-                    _ensure_pg_table(pg_cur, table, cols)
-                    pg_cur.execute(
-                        f'TRUNCATE TABLE "{table}" RESTART IDENTITY CASCADE'
-                    )
+                    _ensure_pg_table(pg_cur, table, cols, rows)
                     if rows:
                         col_list     = ", ".join(f'"{c}"' for c in cols)
                         placeholders = ", ".join(["%s"] * len(cols))
-                        # Cast all values to str (safe for TEXT columns)
+                        
+                        # Dynamically determine numeric columns
+                        numeric_cols = set()
+                        for col_idx, c in enumerate(cols):
+                            col_type = _detect_col_type(c, [r[col_idx] for r in rows])
+                            if "BIGINT" in col_type:
+                                numeric_cols.add(col_idx)
+
                         safe_rows = [
-                            tuple(str(v) if v is not None else None for v in row)
+                            tuple(
+                                int(v) if col_idx in numeric_cols and v is not None and str(v).strip().lstrip("-").isdigit()
+                                else (str(v) if v is not None else None)
+                                for col_idx, v in enumerate(row)
+                            )
                             for row in rows
                         ]
                         pg_cur.executemany(
@@ -192,11 +200,47 @@ def backup_mysql_to_neon(self):
     }
 
 
-def _ensure_pg_table(pg_cur, table, cols):
-    """Creates the table in Neon PG if it doesn't exist (TEXT columns, safe fallback)."""
-    col_defs = ['"id" BIGINT PRIMARY KEY' if c == "id" else f'"{c}" TEXT' for c in cols]
+def _detect_col_type(col_name, sample_values):
+    """Determines PostgreSQL column type based on column name and actual cell values."""
+    if col_name == "id":
+        return "BIGINT PRIMARY KEY"
+
+    non_nulls = [v for v in sample_values if v is not None]
+    if not non_nulls:
+        # Common foreign key integer columns
+        if col_name.endswith("_id") and col_name not in ("instagram_message_id", "message_id", "thread_id", "interaction_id"):
+            return "BIGINT"
+        return "TEXT"
+
+    # Check if all non-null values are numeric integers
+    all_is_digit = True
+    for v in non_nulls:
+        if isinstance(v, bool):
+            all_is_digit = False
+            break
+        if isinstance(v, int):
+            continue
+        val_str = str(v).strip()
+        if not (val_str.isdigit() or (val_str.startswith("-") and val_str[1:].isdigit())):
+            all_is_digit = False
+            break
+
+    if all_is_digit:
+        return "BIGINT"
+    return "TEXT"
+
+
+def _ensure_pg_table(pg_cur, table, cols, rows):
+    """Recreates the table in Neon PG using dynamic column type detection."""
+    pg_cur.execute(f'DROP TABLE IF EXISTS "{table}" CASCADE')
+    col_defs = []
+    for col_idx, c in enumerate(cols):
+        col_vals = [r[col_idx] for r in rows] if rows else []
+        col_type = _detect_col_type(c, col_vals)
+        col_defs.append(f'"{c}" {col_type}')
+
     pg_cur.execute(f"""
-        CREATE TABLE IF NOT EXISTS "{table}" (
+        CREATE TABLE "{table}" (
             {", ".join(col_defs)}
         )
     """)
