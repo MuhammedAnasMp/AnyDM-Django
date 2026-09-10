@@ -29,7 +29,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-5c5y^ry^y$!&nj@it%&iegdn&6-moi=x^(!ja0_1-7@r2%&$k^'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv("DEBUG", "False") == "True"
 
 FRONTEND_HOST = os.getenv("FRONTEND_HOST", "any-dm-next-js.vercel.app")
 BACKEND_HOST = os.getenv("BACKEND_HOST", "localapi.locanydm.online")
@@ -60,25 +60,16 @@ CORS_ALLOW_METHODS = list(default_methods) + [
 ]
 
 CORS_ALLOWED_ORIGINS = [
-
     "http://localhost:3000",
-
     "http://127.0.0.1:3000",
-
     f'https://{FRONTEND_HOST}',
-
     f'https://{BACKEND_HOST}',
-
+    "https://anydm.in",
+    "https://www.anydm.in",
     "https://zoyee.in",
-
-
     "https://localapi.locanydm.online",
-
-
     "https://api.locanydm.online",
-
     "https://wb.locanydm.online",
-
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
@@ -96,9 +87,10 @@ CSRF_TRUSTED_ORIGINS = [
     "https://127.0.0.1:3000",
     f'https://{FRONTEND_HOST}',
     f'https://{BACKEND_HOST}',
-
     f'https://*.{FRONTEND_HOST}',
     f'https://*.{BACKEND_HOST}',
+    "https://anydm.in",
+    "https://*.anydm.in",
     "https://zoyee.in",
     "https://*.zoyee.in",
     "https://*.vercel.app",
@@ -268,7 +260,7 @@ CHANNEL_LAYERS = {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
             "hosts": [{
-                "address": os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+                "address": os.getenv("REDIS_URL") or os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0"),
                 # Completely disable read timeouts on redis socket to prevent disconnects
                 "socket_timeout": None,
             }],
