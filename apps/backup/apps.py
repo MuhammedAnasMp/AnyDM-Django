@@ -10,14 +10,15 @@ def ensure_periodic_tasks(sender, **kwargs):
     Automatically creates default Celery Beat periodic tasks in the DB
     if they do not already exist. Safe and idempotent.
     """
+    using_db = kwargs.get("using", "default")
     try:
         from django_celery_beat.models import PeriodicTask, CrontabSchedule
 
         # 1. Clean up old duplicate task name from settings.py if present
-        PeriodicTask.objects.filter(name="nightly-db-to-neon-backup").delete()
+        PeriodicTask.objects.using(using_db).filter(name="nightly-db-to-neon-backup").delete()
 
         # 2. Ensure 2:00 AM UTC crontab schedule exists
-        schedule, _ = CrontabSchedule.objects.get_or_create(
+        schedule, _ = CrontabSchedule.objects.using(using_db).get_or_create(
             minute="0",
             hour="2",
             day_of_week="*",
@@ -26,8 +27,8 @@ def ensure_periodic_tasks(sender, **kwargs):
             timezone="UTC",
         )
 
-        # 2. Ensure Nightly Backup task exists
-        task, created = PeriodicTask.objects.get_or_create(
+        # 3. Ensure Nightly Backup task exists
+        task, created = PeriodicTask.objects.using(using_db).get_or_create(
             name="Nightly DB to Neon PostgreSQL Backup",
             defaults={
                 "task": "backup.mysql_to_neon",
@@ -41,7 +42,7 @@ def ensure_periodic_tasks(sender, **kwargs):
             logger.info("[BACKUP] Auto-created periodic task: Nightly DB to Neon PostgreSQL Backup")
 
     except Exception as exc:
-        logger.debug(f"[BACKUP] Skipping periodic task creation: {exc}")
+        logger.warning(f"[BACKUP] Skipping periodic task creation: {exc}")
 
 
 class BackupConfig(AppConfig):
