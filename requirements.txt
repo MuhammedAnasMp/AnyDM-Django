@@ -23,6 +23,7 @@ dj-database-url==3.1.2
 Django
 django-cors-headers==4.9.0
 django_celery_results==2.6.0
+django-celery-beat>=2.5.0
 djangorestframework==3.17.1
 djangorestframework_simplejwt==5.5.1
 firebase_admin==7.5.0
@@ -54,6 +55,7 @@ proto-plus==1.28.0
 protobuf==7.35.1
 psycopg2==2.9.12
 psycopg2-binary==2.9.12
+psycopg[binary]
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
 pycparser==3.0
