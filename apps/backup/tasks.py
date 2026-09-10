@@ -28,10 +28,8 @@ logger = logging.getLogger(__name__)
 # Read backup DB URL from environment (set BACKUP_DATABASE_URL in .env)
 NEON_PG_URL = os.environ.get("BACKUP_DATABASE_URL", "")
 
-# Tables to SKIP during backup (system / non-critical)
+# Tables to SKIP during backup (only transient task result caches)
 SKIP_TABLES = {
-    "django_migrations",
-    "django_session",
     "django_celery_results_taskresult",
     "django_celery_results_chordcounter",
     "django_celery_results_groupresult",
