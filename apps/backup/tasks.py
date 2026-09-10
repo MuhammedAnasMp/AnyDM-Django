@@ -110,7 +110,11 @@ def backup_mysql_to_neon(self):
             neon = psycopg.connect(NEON_PG_URL)
             neon.autocommit = False
     except Exception as e:
-        logger.error(f"[BACKUP] Neon connection failed: {e}")
+        logger.error(f"[BACKUP] Connection failed: {e}")
+        log.status = BackupLog.Status.ERROR
+        log.finished_at = timezone.now()
+        log.error_detail = [{"error": f"Failed to connect to BACKUP_DATABASE_URL: {e}"}]
+        log.save()
         return {"status": "error", "reason": str(e)}
 
     src_conn = connections["default"]
