@@ -28,12 +28,8 @@ logger = logging.getLogger(__name__)
 # Read backup DB URL from environment (set BACKUP_DATABASE_URL in .env)
 NEON_PG_URL = os.environ.get("BACKUP_DATABASE_URL", "")
 
-# Tables to SKIP during backup (only transient task result caches)
-SKIP_TABLES = {
-    "django_celery_results_taskresult",
-    "django_celery_results_chordcounter",
-    "django_celery_results_groupresult",
-}
+# Tables to SKIP during backup (set to empty so 100% of tables are backed up)
+SKIP_TABLES = set()
 
 
 def _get_db_engine():
@@ -135,8 +131,22 @@ def backup_mysql_to_neon(self):
                     cur.execute(f"SELECT * FROM {quoted}")
                     rows = cur.fetchall()
 
-                with target_conn.cursor() as target_cur:
-                    if target_engine == "postgresql":
+                if target_engine == "sqlite":
+                    target_cur = target_conn.cursor()
+                    _ensure_sqlite_table(target_cur, table, cols, rows)
+                    if rows:
+                        col_list     = ", ".join(f'`{c}`' for c in cols)
+                        placeholders = ", ".join(["?"] * len(cols))
+                        safe_rows = [
+                            tuple(str(v) if v is not None else None for v in row)
+                            for row in rows
+                        ]
+                        target_cur.executemany(
+                            f'INSERT INTO `{table}` ({col_list}) VALUES ({placeholders})',
+                            safe_rows
+                        )
+                elif target_engine == "postgresql":
+                    with target_conn.cursor() as target_cur:
                         _ensure_pg_table(target_cur, table, cols, rows)
                         if rows:
                             col_list     = ", ".join(f'"{c}"' for c in cols)
@@ -179,8 +189,9 @@ def backup_mysql_to_neon(self):
                                 target_cur.execute(f"""
                                     SELECT setval(pg_get_serial_sequence('"{table}"', 'id'), COALESCE(MAX("id"), 1)) FROM "{table}"
                                 """)
-                    else:
-                        # MySQL target
+                else:
+                    # MySQL target
+                    with target_conn.cursor() as target_cur:
                         _ensure_mysql_table(target_cur, table, cols, rows)
                         if rows:
                             col_list     = ", ".join(f'`{c}`' for c in cols)
@@ -244,6 +255,13 @@ def backup_mysql_to_neon(self):
     log.error_detail     = stats["errors"]
     log.save()
 
+    # Purge backup logs older than 10 days
+    from datetime import timedelta
+    cutoff = timezone.now() - timedelta(days=10)
+    deleted_count, _ = BackupLog.objects.filter(triggered_at__lt=cutoff).delete()
+    if deleted_count:
+        logger.info(f"[BACKUP] Purged {deleted_count} backup log(s) older than 10 days")
+
     logger.info(
         f"[BACKUP] Done | status={status} | "
         f"tables={stats['tables']} | rows={stats['rows']} | "
@@ -272,7 +290,7 @@ def _detect_col_type(col_name, sample_values):
     if not non_nulls:
         if (col_name.endswith(("_at", "_date", "_time")) or col_name in ("date", "datetime", "timestamp", "expire_date", "created_at", "updated_at", "last_login", "date_joined", "expires_at", "clocked_time", "last_run_at")) and col_name not in ("prompt_at",):
             return "TIMESTAMPTZ"
-        if col_name.endswith("_id") and col_name not in ("instagram_message_id", "message_id", "thread_id", "interaction_id", "order_id", "account_id", "action_id"):
+        if col_name.endswith("_id") and col_name not in ("object_id", "instagram_message_id", "message_id", "thread_id", "interaction_id", "order_id", "account_id", "action_id"):
             return "BIGINT"
         return "TEXT"
 
@@ -345,9 +363,21 @@ def _ensure_mysql_table(mysql_cur, table, cols, rows):
     mysql_cur.execute("SET FOREIGN_KEY_CHECKS = 1;")
 
 
+def _ensure_sqlite_table(sqlite_cur, table, cols, rows):
+    """Recreates table in SQLite target DB."""
+    sqlite_cur.execute(f"DROP TABLE IF EXISTS `{table}`")
+    col_defs = []
+    for c in cols:
+        if c == "id":
+            col_defs.append("`id` INTEGER PRIMARY KEY AUTOINCREMENT")
+        else:
+            col_defs.append(f"`{c}` TEXT NULL")
+    sqlite_cur.execute(f"CREATE TABLE `{table}` ({', '.join(col_defs)})")
+
+
 def _connect_target_db(target_url):
     """
-    Connects to target DB (PostgreSQL or MySQL) from target_url.
+    Connects to target DB (PostgreSQL, MySQL, or SQLite) from target_url.
     Returns: (target_conn, target_engine_type)
     """
     import dj_database_url
@@ -375,5 +405,10 @@ def _connect_target_db(target_url):
         )
         conn.autocommit(False)
         return conn, "mysql"
+    elif "sqlite" in engine or target_url.startswith("sqlite"):
+        import sqlite3
+        db_path = config.get("NAME") or target_url.replace("sqlite:///", "")
+        conn = sqlite3.connect(db_path)
+        return conn, "sqlite"
     else:
         raise ValueError(f"Unsupported backup DB engine in URL: {target_url}")
