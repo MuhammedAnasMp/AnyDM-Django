@@ -116,6 +116,9 @@ class InstagramAccount(models.Model): # sellers
     last_refreshed_at = models.DateTimeField(null=True, blank=True)
     token_refreshed_at = models.DateTimeField(null=True, blank=True)
     is_token_expired = models.BooleanField(default=False)
+    is_following_official_account = models.BooleanField(default=False)
+    official_follow_points_awarded = models.IntegerField(default=0)
+    official_follow_at = models.DateTimeField(null=True, blank=True)
 
     def refresh_token_if_needed(self):
         """
@@ -231,6 +234,11 @@ class WebsiteSettings(models.Model):
     cancellation_policy = models.BooleanField(default=False)
     cod_enabled = models.BooleanField(default=True)
     online_payment_enabled = models.BooleanField(default=True)
+    payout_hold_mode = models.CharField(
+        max_length=20,
+        choices=[('INSTANT', 'Instant Payouts'), ('MONTHLY', 'Monthly Held Payouts')],
+        default='INSTANT'
+    )
 
     # Product Display Settings
     show_related_products = models.BooleanField(default=True)
@@ -274,6 +282,8 @@ class SellerKYC(models.Model):
     bank_name = models.CharField(max_length=255, blank=True, null=True)
     bank_account_number = models.CharField(max_length=100, blank=True, null=True)
     bank_ifsc = models.CharField(max_length=50, blank=True, null=True)
+    razorpay_account_id = models.CharField(max_length=100, blank=True, null=True)
+    razorpay_stakeholder_id = models.CharField(max_length=100, blank=True, null=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     is_card_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)

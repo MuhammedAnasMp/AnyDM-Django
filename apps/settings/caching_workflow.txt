@@ -21,3 +21,10 @@ REDIS CACHING SETTINGS WORKFLOW
    - Application calls 'get_setting_value(key)'.
    - Checks Redis *only*. Returns the value if 'enabled' is True.
    - No DB fallback occurs.
+
+5. WEBHOOK FORWARDING DEV SETTINGS:
+   - FORWARD_WEBHOOK_URL: Target URL to forward incoming webhooks asynchronously.
+   - wb_send_only_for_dev: Controls webhook execution flow when FORWARD_WEBHOOK_URL is set:
+     * ENABLED (true/1/yes): Forwards to FORWARD_WEBHOOK_URL and returns 200 immediately (bypasses local server).
+     * DISABLED / NOT FOUND: Forwards to FORWARD_WEBHOOK_URL AND continues local server processing (uses both).
+     * FORWARD_WEBHOOK_URL DISABLED / NOT FOUND: Skips forwarding and processes locally (uses prod server only).

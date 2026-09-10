@@ -1402,6 +1402,12 @@ class ReferralStatsView(APIView):
                 'referral_count': u.ref_count
             })
 
+        active_ig = user.active_instagram_account or user.instagram_accounts.filter(is_active=True).first()
+        active_ig_handle = active_ig.username if active_ig else user.username
+        is_following_official = getattr(active_ig, 'is_following_official_account', False) if active_ig else getattr(user, 'is_following_official_account', False)
+        pts_awarded = getattr(active_ig, 'official_follow_points_awarded', 0) if active_ig else getattr(user, 'official_follow_points_awarded', 0)
+        follow_at_iso = active_ig.official_follow_at.isoformat() if (active_ig and getattr(active_ig, 'official_follow_at', None)) else (user.official_follow_at.isoformat() if getattr(user, 'official_follow_at', None) else None)
+
         return Response({
             'referral_code': user.referral_code,
             'points': user.points,
@@ -1412,9 +1418,11 @@ class ReferralStatsView(APIView):
             'paid_plan_price': float(sys_settings.premium_plan_price),
             'referral_points': sys_settings.referral_points,
             'official_follow_points': getattr(sys_settings, 'official_follow_points', 50),
-            'is_following_official_account': getattr(user, 'is_following_official_account', False),
-            'official_follow_points_awarded': getattr(user, 'official_follow_points_awarded', 0),
-            'official_follow_at': user.official_follow_at.isoformat() if getattr(user, 'official_follow_at', None) else None,
+            'official_instagram_handle': getattr(sys_settings, 'official_instagram_handle', 'anydm.in'),
+            'is_following_official_account': is_following_official,
+            'official_follow_points_awarded': pts_awarded,
+            'official_follow_at': follow_at_iso,
+            'active_ig_handle': active_ig_handle,
             'trial_days_left': user.trial_days_left,
             'plan': user.plan,
             'is_premium_active': user.is_premium_active,
@@ -1529,25 +1537,92 @@ class ClaimOfficialFollowRewardView(APIView):
 
     def post(self, request):
         user = request.user
-        if getattr(user, 'is_following_official_account', False):
-            awarded = getattr(user, 'official_follow_points_awarded', 50) or 50
+        from apps.settings.models import SystemSettings
+        from django.utils import timezone
+        import requests
+
+        sys_settings = SystemSettings.get_settings()
+        official_handle = getattr(sys_settings, 'official_instagram_handle', 'anydm.in') or 'anydm.in'
+        points_to_award = getattr(sys_settings, 'official_follow_points', 50) or 50
+
+        # Retrieve active connected creator Instagram Account
+        active_account = user.active_instagram_account or user.instagram_accounts.filter(is_active=True).first()
+        if not active_account:
             return Response({
-                'message': f'You have already claimed your {awarded} points for following @anydm.in!',
+                'error': 'No connected Instagram account',
+                'details': 'Please connect your Instagram Creator/Business account in Settings before claiming follow rewards.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        active_handle_str = active_account.username
+
+        # Already claimed for this specific IG account
+        if getattr(active_account, 'is_following_official_account', False):
+            awarded = getattr(active_account, 'official_follow_points_awarded', points_to_award) or points_to_award
+            return Response({
+                'message': f'Active account @{active_handle_str} has already claimed {awarded} points for following @{official_handle}!',
                 'already_claimed': True,
                 'points': user.points,
                 'is_following_official_account': True,
+                'official_instagram_handle': official_handle,
+                'active_ig_handle': active_handle_str,
                 'user': serialize_user_payload(user)
             }, status=status.HTTP_200_OK)
 
-        from apps.settings.models import SystemSettings
-        from django.utils import timezone
-        sys_settings = SystemSettings.get_settings()
-        points_to_award = getattr(sys_settings, 'official_follow_points', 50) or 50
+        # Trust-based verification: validate the creator's IG account is real & connected
+        # Instagram API does NOT support checking if user A follows user B,
+        # so we verify account validity and use a trust-based approach.
+        is_account_valid = False
+        api_error_details = ""
+
+        if active_account and active_account.access_token:
+            try:
+                # Verify the creator's IG token is valid and account exists
+                ig_graph_url = "https://graph.instagram.com/v25.0/me"
+                ig_params = {
+                    'fields': 'id,username',
+                    'access_token': active_account.access_token
+                }
+                ig_res = requests.get(ig_graph_url, params=ig_params, timeout=8)
+                print(f"[Follow Claim - Account Check] @{active_handle_str}, Status: {ig_res.status_code}, Response: {ig_res.text[:200]}")
+
+                if ig_res.status_code == 200:
+                    ig_data = ig_res.json()
+                    # Confirm the token belongs to the expected account
+                    api_username = ig_data.get('username', '').lower()
+                    if api_username and api_username == active_handle_str.lower():
+                        is_account_valid = True
+                    else:
+                        # Token is valid but username mismatch — still allow (account may have changed handle)
+                        is_account_valid = True
+                        print(f"[Follow Claim - Username Mismatch] Expected @{active_handle_str}, API returned @{api_username}. Allowing claim.")
+                else:
+                    error_data = ig_res.json() if ig_res.headers.get('content-type', '').startswith('application/json') else {}
+                    api_error_details = error_data.get('error', {}).get('message', ig_res.text[:150])
+                    print(f"[Follow Claim - Token Invalid] @{active_handle_str}: {api_error_details}")
+            except Exception as e:
+                print(f"[Follow Claim - API Error] {e}")
+                api_error_details = str(e)
+                # Allow claim even if API is unreachable (trust-based)
+                is_account_valid = True
+
+        if not is_account_valid:
+            return Response({
+                'error': 'Account verification failed',
+                'details': f'Could not verify your Instagram account @{active_handle_str}. Your access token may have expired. Please reconnect your account in Settings.',
+                'api_message': api_error_details
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Award points
+        now_dt = timezone.now()
+        active_account.is_following_official_account = True
+        active_account.official_follow_points_awarded = points_to_award
+        active_account.official_follow_at = now_dt
+        active_account.save(update_fields=['is_following_official_account', 'official_follow_points_awarded', 'official_follow_at'])
 
         user.points += points_to_award
         user.is_following_official_account = True
         user.official_follow_points_awarded = points_to_award
-        user.official_follow_at = timezone.now()
+        user.official_follow_at = now_dt
         user.save(update_fields=[
             'points',
             'is_following_official_account',
@@ -1555,13 +1630,15 @@ class ClaimOfficialFollowRewardView(APIView):
             'official_follow_at'
         ])
 
-        print(f"[Official Follow Claimed] User {user.username} claimed {points_to_award} points for following @anydm.in. Total points: {user.points}")
+        print(f"[Official Follow Claimed] User {user.username} (@{active_handle_str}) claimed {points_to_award} points for following @{official_handle}. Total points: {user.points}")
 
         return Response({
-            'message': f'Success! +{points_to_award} points added to your balance for following @anydm.in.',
+            'message': f'Success! @{active_handle_str} verified. +{points_to_award} points awarded for following @{official_handle}!',
             'points_awarded': points_to_award,
             'points': user.points,
             'is_following_official_account': True,
+            'official_instagram_handle': official_handle,
+            'active_ig_handle': active_handle_str,
             'user': serialize_user_payload(user)
         }, status=status.HTTP_200_OK)
 
@@ -1571,20 +1648,23 @@ class UnfollowOfficialRewardView(APIView):
 
     def post(self, request):
         user = request.user
-        if not getattr(user, 'is_following_official_account', False):
-            return Response({
-                'message': 'User is not marked as following @anydm.in.',
-                'points': user.points,
-                'is_following_official_account': False,
-                'user': serialize_user_payload(user)
-            }, status=status.HTTP_200_OK)
+        active_account = user.active_instagram_account or user.instagram_accounts.filter(is_active=True).first()
 
         from django.utils import timezone
-        points_to_deduct = getattr(user, 'official_follow_points_awarded', 0) or 50
+        now_dt = timezone.now()
+
+        if active_account:
+            points_to_deduct = getattr(active_account, 'official_follow_points_awarded', 0) or 50
+            active_account.is_following_official_account = False
+            active_account.official_follow_points_awarded = 0
+            active_account.save(update_fields=['is_following_official_account', 'official_follow_points_awarded'])
+        else:
+            points_to_deduct = getattr(user, 'official_follow_points_awarded', 0) or 50
+
         user.points = max(0, user.points - points_to_deduct)
         user.is_following_official_account = False
         user.official_follow_points_awarded = 0
-        user.official_unfollow_at = timezone.now()
+        user.official_unfollow_at = now_dt
         user.save(update_fields=[
             'points',
             'is_following_official_account',
@@ -1592,10 +1672,10 @@ class UnfollowOfficialRewardView(APIView):
             'official_unfollow_at'
         ])
 
-        print(f"[Official Unfollow] User {user.username} unfollowed @anydm.in. Deducted {points_to_deduct} points. Total points: {user.points}")
+        print(f"[Official Unfollow] User {user.username} (Active IG: @{active_account.username if active_account else 'None'}) cleared follow status. Deducted {points_to_deduct} points. Total points: {user.points}")
 
         return Response({
-            'message': f'Unfollow recorded. {points_to_deduct} points deducted from balance.',
+            'message': f'Follow status cleared for active account. {points_to_deduct} points deducted.',
             'points_deducted': points_to_deduct,
             'points': user.points,
             'is_following_official_account': False,
@@ -2028,6 +2108,7 @@ class GlobalSystemSettingsView(APIView):
             'referral_points': sys_settings.referral_points,
             'points_to_redeem': sys_settings.points_to_redeem,
             'official_follow_points': getattr(sys_settings, 'official_follow_points', 50),
+            'official_instagram_handle': getattr(sys_settings, 'official_instagram_handle', 'anydm.in'),
             'premium_plan_price': float(sys_settings.premium_plan_price),
             'enable_ai': sys_settings.enable_ai,
             'enable_subscription_ai': sys_settings.enable_subscription_ai,
@@ -2055,6 +2136,7 @@ class GlobalSystemSettingsView(APIView):
         referral_points = request.data.get('referral_points')
         points_to_redeem = request.data.get('points_to_redeem')
         official_follow_points = request.data.get('official_follow_points')
+        official_instagram_handle = request.data.get('official_instagram_handle')
         premium_plan_price = request.data.get('premium_plan_price')
         enable_ai = request.data.get('enable_ai')
         enable_subscription_ai = request.data.get('enable_subscription_ai')
@@ -2117,6 +2199,7 @@ class GlobalSystemSettingsView(APIView):
                 'referral_points': sys_settings.referral_points,
                 'points_to_redeem': sys_settings.points_to_redeem,
                 'official_follow_points': getattr(sys_settings, 'official_follow_points', 50),
+                'official_instagram_handle': getattr(sys_settings, 'official_instagram_handle', 'anydm.in'),
                 'premium_plan_price': float(sys_settings.premium_plan_price),
                 'enable_ai': sys_settings.enable_ai,
                 'enable_subscription_ai': sys_settings.enable_subscription_ai,
@@ -2410,6 +2493,31 @@ class RazorpayWebhookView(APIView):
                         print(
                             f"[Razorpay-Webhook-Success] Upgrade user {user.username} to Premium via Webhook.")
 
+            elif event_type in ['transfer.processed', 'settlement.processed']:
+                try:
+                    transfer_entity = event_data['payload']['transfer']['entity']
+                    rzp_order_id = transfer_entity.get('order_id')
+                    recipient_account = transfer_entity.get('recipient')
+                    if rzp_order_id:
+                        from apps.crm.models import Settlement
+                        settlements = Settlement.objects.filter(order__razorpay_order_id=rzp_order_id)
+                        settlements.update(status='PAID')
+                        print(f"[Razorpay-Route-Webhook] Marked settlement as PAID for Razorpay order {rzp_order_id} (Linked Account: {recipient_account})")
+                except Exception as tr_err:
+                    print(f"[Razorpay-Route-Webhook-Error] Failed to process transfer webhook: {tr_err}")
+
+            elif event_type == 'transfer.failed':
+                try:
+                    transfer_entity = event_data['payload']['transfer']['entity']
+                    rzp_order_id = transfer_entity.get('order_id')
+                    if rzp_order_id:
+                        from apps.crm.models import Settlement
+                        settlements = Settlement.objects.filter(order__razorpay_order_id=rzp_order_id)
+                        settlements.update(status='FAILED')
+                        print(f"[Razorpay-Route-Webhook] Marked settlement as FAILED for Razorpay order {rzp_order_id}")
+                except Exception as tr_err:
+                    print(f"[Razorpay-Route-Webhook-Error] Failed to process failed transfer webhook: {tr_err}")
+
             return Response({'status': 'ok'}, status=200)
 
         except Exception as e:
@@ -2647,6 +2755,7 @@ def serialize_redirect_rule(rule: LinkInBioRedirectRule) -> dict:
 
 
 def serialize_page(page: LinkInBioPage) -> dict:
+    c_theme = page.custom_theme or {}
     return {
         'id': page.id,
         'username': page.username,
@@ -2655,7 +2764,11 @@ def serialize_page(page: LinkInBioPage) -> dict:
         'profile_image_url': page.profile_image_url,
         'banner_image_url': page.banner_image_url,
         'theme_id': page.theme_id,
-        'custom_theme': page.custom_theme or {},
+        'custom_theme': c_theme,
+        'section_order': c_theme.get('section_order', ['blocks', 'social', 'redirects']),
+        'blocks_enabled': c_theme.get('blocks_enabled', True),
+        'social_enabled': c_theme.get('social_enabled', True),
+        'show_social_usernames': c_theme.get('show_social_usernames', True),
         'social_accounts': page.social_accounts or [],
         'social_display_mode': page.social_display_mode,
         'smart_redirect_enabled': page.smart_redirect_enabled,
@@ -2711,6 +2824,18 @@ class LinkInBioSettingsView(APIView):
             page.theme_id = data['theme_id']
         if 'custom_theme' in data:
             page.custom_theme = data['custom_theme']
+
+        c_theme = page.custom_theme or {}
+        if 'section_order' in data:
+            c_theme['section_order'] = data['section_order']
+        if 'blocks_enabled' in data:
+            c_theme['blocks_enabled'] = bool(data['blocks_enabled'])
+        if 'social_enabled' in data:
+            c_theme['social_enabled'] = bool(data['social_enabled'])
+        if 'show_social_usernames' in data:
+            c_theme['show_social_usernames'] = bool(data['show_social_usernames'])
+        page.custom_theme = c_theme
+
         if 'social_accounts' in data:
             page.social_accounts = data['social_accounts']
         if 'social_display_mode' in data:

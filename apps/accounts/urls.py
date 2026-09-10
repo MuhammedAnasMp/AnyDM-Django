@@ -1,4 +1,5 @@
 from django.urls import path
+from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     FirebaseLoginView, 
     InstagramLoginView, 
@@ -45,6 +46,7 @@ from .views import (
 )
 
 urlpatterns = [
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/firebase/', FirebaseLoginView.as_view(), name='firebase-login'),
     path('auth/instagram/', InstagramLoginView.as_view(), name='instagram-login'),
     path('auth/instagram/toggle-login/', ToggleInstagramLoginView.as_view(), name='instagram-toggle-login'),

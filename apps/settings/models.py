@@ -49,6 +49,7 @@ class SystemSettings(models.Model):
     # Marketplace configurations
     global_cod_enabled = models.BooleanField(default=True)
     default_commission_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=10.00)
+    instant_payout_commission_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=3.00)
 
     # 🎁 Creator VIP Free Pro Program
     creator_vip_extended_trial_days = models.IntegerField(default=15)

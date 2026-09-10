@@ -25,7 +25,9 @@ from .views import (
     PersistentMenuView,
     IceBreakersView,
     AnalyticsOverviewView,
-    RevenueOverviewView
+    RevenueOverviewView,
+    ProcessOrderRefundView,
+    SellerPayoutModeView
 )
 
 urlpatterns = [
@@ -34,6 +36,8 @@ urlpatterns = [
     path("admin/order-settings/", AdminOrderSettingsView.as_view(), name="admin-order-settings"),
     path("admin/kyc/", AdminKYCListView.as_view(), name="admin-kyc-list"),
     path("store/checkout/confirm-payment/", ConfirmPaymentView.as_view(), name="store-checkout-confirm-payment"),
+    path("store/orders/refund/", ProcessOrderRefundView.as_view(), name="store-order-refund"),
+    path("seller/payout-mode/", SellerPayoutModeView.as_view(), name="seller-payout-mode"),
     path("webhooks/instagram/", InstagramWebhookView.as_view(), name="instagram-webhook"),
     path("webhooks/instagram", InstagramWebhookView.as_view(), name="instagram-webhook-no-slash"),
     path("conversations/", InstagramConversationsView.as_view(), name="instagram-conversations"),

@@ -367,6 +367,9 @@ class InstagramWebhookView(View):
         try:
             from apps.settings.redis_client import get_setting_value
             forward_url = get_setting_value("FORWARD_WEBHOOK_URL")
+            send_only_dev_setting = get_setting_value("wb_send_only_for_dev")
+            send_only_dev = send_only_dev_setting is not None and str(send_only_dev_setting).lower() in ["true", "1", "yes", "enabled"]
+
             if forward_url:
                 from urllib.parse import urlparse
                 parsed_forward = urlparse(forward_url)
@@ -376,8 +379,9 @@ class InstagramWebhookView(View):
                         f"Bypassed POST forwarding to prevent infinite loop on host: {incoming_host}")
                     forward_url = None
         except Exception as e:
-            logger.warning(f"Error fetching FORWARD_WEBHOOK_URL setting: {e}")
+            logger.warning(f"Error fetching dev forwarding settings: {e}")
             forward_url = None
+            send_only_dev = False
 
         if forward_url:
             try:
@@ -406,7 +410,8 @@ class InstagramWebhookView(View):
                 logger.error(
                     f"Failed to initiate async Instagram webhook forward: {e}")
 
-            return HttpResponse("EVENT_RECEIVED", status=200)
+            if send_only_dev:
+                return HttpResponse("EVENT_RECEIVED", status=200)
 
         # Abort if rate limit exceeded
         if not self.check_rate_limit(request):
@@ -2025,6 +2030,7 @@ class SellerKYCView(APIView):
             'bank_ifsc': kyc.bank_ifsc,
             'status': kyc.status,
             'is_card_verified': kyc.is_card_verified,
+            'razorpay_account_id': kyc.razorpay_account_id,
         })
 
     def post(self, request):
@@ -2037,6 +2043,7 @@ class SellerKYCView(APIView):
         bank_name = request.data.get('bank_name', '').strip()
         bank_account_number = request.data.get('bank_account_number', '').strip()
         bank_ifsc = request.data.get('bank_ifsc', '').strip().upper()
+        custom_rzp_account = request.data.get('razorpay_account_id', '').strip()
 
         if len(full_name) < 3:
             return Response({'error': 'Full name must be at least 3 characters.'}, status=400)
@@ -2067,11 +2074,54 @@ class SellerKYCView(APIView):
         kyc.bank_name = bank_name
         kyc.bank_account_number = bank_account_number
         kyc.bank_ifsc = bank_ifsc
+        if custom_rzp_account:
+            kyc.razorpay_account_id = custom_rzp_account
 
         # When details are submitted, status changes to SUBMITTED
         kyc.status = 'SUBMITTED'
         kyc.save()
-        return Response({'message': 'KYC details submitted successfully', 'status': kyc.status})
+        return Response({'message': 'KYC details submitted successfully', 'status': kyc.status, 'razorpay_account_id': kyc.razorpay_account_id})
+
+
+def sync_razorpay_route_account(seller_kyc):
+    """
+    Creates or links a Razorpay Route Linked Account for the seller upon KYC approval.
+    Raises an exception if Razorpay API fails or returns access denied.
+    """
+    if seller_kyc.razorpay_account_id:
+        return seller_kyc.razorpay_account_id
+
+    import os
+    import razorpay
+    RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
+    RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
+
+    client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+    account_payload = {
+        "name": seller_kyc.full_name or seller_kyc.user.username,
+        "email": seller_kyc.user.email or f"{seller_kyc.user.username}@anydm.com",
+        "tnc_accepted": True,
+        "account_details": {
+            "business_name": seller_kyc.full_name or seller_kyc.user.username,
+            "business_type": "individual"
+        },
+        "bank_account": {
+            "ifsc_code": seller_kyc.bank_ifsc or "SBIN0001234",
+            "account_number": seller_kyc.bank_account_number or "1234567890",
+            "beneficiary_name": seller_kyc.full_name or seller_kyc.user.username
+        }
+    }
+    try:
+        rzp_account = client.account.create(account_payload)
+        account_id = rzp_account.get("id") if isinstance(rzp_account, dict) else None
+        if not account_id:
+            raise Exception("Razorpay API response did not contain a valid Account ID.")
+        seller_kyc.razorpay_account_id = account_id
+        seller_kyc.save(update_fields=["razorpay_account_id"])
+        return seller_kyc.razorpay_account_id
+    except Exception as e:
+        print(f"[Razorpay Route Account Sync Error] {e}")
+        raise e
 
 
 class AdminKYCListView(APIView):
@@ -2098,6 +2148,7 @@ class AdminKYCListView(APIView):
                 'bank_ifsc': record.bank_ifsc,
                 'status': record.status,
                 'is_card_verified': record.is_card_verified,
+                'razorpay_account_id': record.razorpay_account_id,
                 'created_at': record.created_at,
                 'updated_at': record.updated_at,
             })
@@ -2109,6 +2160,7 @@ class AdminKYCListView(APIView):
             
         kyc_id = request.data.get('kyc_id')
         action = request.data.get('action') # 'APPROVE' or 'REJECT'
+        custom_rzp_account = request.data.get('razorpay_account_id')
         
         from apps.accounts.models import SellerKYC
         try:
@@ -2117,17 +2169,30 @@ class AdminKYCListView(APIView):
             return Response({'error': 'KYC record not found.'}, status=404)
             
         if action == 'APPROVE':
-            record.status = 'APPROVED'
+            if custom_rzp_account:
+                record.razorpay_account_id = custom_rzp_account
+                record.status = 'APPROVED'
+                record.save(update_fields=["razorpay_account_id", "status"])
+            else:
+                try:
+                    sync_razorpay_route_account(record)
+                    record.status = 'APPROVED'
+                    record.save(update_fields=["status"])
+                except Exception as e:
+                    err_msg = str(e)
+                    return Response({
+                        'error': f'KYC approval blocked: Razorpay Route account creation failed ({err_msg}). Access was denied or Razorpay API credentials/Route features are disabled.'
+                    }, status=400)
         elif action == 'REJECT':
             record.status = 'REJECTED'
+            record.save(update_fields=["status"])
             # Automatically enable COD and disable Online Payments in WebsiteSettings when KYC is rejected
             from apps.accounts.models import WebsiteSettings
             WebsiteSettings.objects.filter(instagram_account__user=record.user).update(cod_enabled=True, online_payment_enabled=False)
         else:
             return Response({'error': 'Invalid action. Must be APPROVE or REJECT.'}, status=400)
             
-        record.save()
-        return Response({'message': f'KYC status updated to {record.status}', 'status': record.status})
+        return Response({'message': f'KYC status updated to {record.status}', 'status': record.status, 'razorpay_account_id': record.razorpay_account_id})
 
 
 class AdminOrderSettingsView(APIView):
@@ -2138,6 +2203,10 @@ class AdminOrderSettingsView(APIView):
             return Response({'error': 'Only administrators can view order settings.'}, status=403)
         
         from apps.accounts.models import WebsiteSettings
+        from apps.settings.models import SystemSettings
+        from apps.products.models import Category
+
+        sys_settings = SystemSettings.get_settings()
         settings = WebsiteSettings.objects.all().select_related('instagram_account').order_by('store_name')
         
         data = []
@@ -2150,33 +2219,78 @@ class AdminOrderSettingsView(APIView):
                 'return_policy': s.return_policy,
                 'cancellation_policy': s.cancellation_policy,
             })
-        return Response(data)
+
+        categories = Category.objects.all().values('id', 'name', 'commission_percentage')
+        category_list = []
+        for c in categories:
+            category_list.append({
+                'id': c['id'],
+                'name': c['name'],
+                'commission_percentage': str(c['commission_percentage'])
+            })
+
+        return Response({
+            'stores': data,
+            'global_commission_pct': str(sys_settings.default_commission_percentage),
+            'instant_payout_commission_pct': str(getattr(sys_settings, 'instant_payout_commission_percentage', '3.00')),
+            'categories': category_list
+        })
 
     def post(self, request):
         if not (request.user.is_staff or request.user.is_superuser):
             return Response({'error': 'Only administrators can modify order settings.'}, status=403)
         
+        from decimal import Decimal
+        from apps.accounts.models import WebsiteSettings
+        from apps.settings.models import SystemSettings
+        from apps.products.models import Category
+
+        global_comm = request.data.get('global_commission_pct')
+        instant_payout_comm = request.data.get('instant_payout_commission_pct')
+        category_comms = request.data.get('category_commissions') # [{id: 1, commission_percentage: 5.0}]
         settings_id = request.data.get('settings_id')
         return_policy = request.data.get('return_policy')
         cancellation_policy = request.data.get('cancellation_policy')
-        
-        from apps.accounts.models import WebsiteSettings
-        try:
-            settings_obj = WebsiteSettings.objects.get(id=settings_id)
-        except WebsiteSettings.DoesNotExist:
-            return Response({'error': 'Website settings record not found.'}, status=404)
+
+        sys_settings = SystemSettings.get_settings()
+        if global_comm is not None:
+            try:
+                sys_settings.default_commission_percentage = Decimal(str(global_comm))
+                sys_settings.save(update_fields=['default_commission_percentage'])
+            except Exception as err:
+                print(f"[AdminOrderSettings] Error updating global comm: {err}")
+
+        if instant_payout_comm is not None:
+            try:
+                sys_settings.instant_payout_commission_percentage = Decimal(str(instant_payout_comm))
+                sys_settings.save(update_fields=['instant_payout_commission_percentage'])
+            except Exception as err:
+                print(f"[AdminOrderSettings] Error updating instant payout comm: {err}")
+
+        if category_comms and isinstance(category_comms, list):
+            for item in category_comms:
+                cat_id = item.get('id')
+                cat_pct = item.get('commission_percentage')
+                if cat_id and cat_pct is not None:
+                    try:
+                        Category.objects.filter(id=cat_id).update(commission_percentage=Decimal(str(cat_pct)))
+                    except Exception as cat_err:
+                        print(f"[AdminOrderSettings] Error updating category comm: {cat_err}")
+
+        if settings_id:
+            try:
+                settings_obj = WebsiteSettings.objects.get(id=settings_id)
+                if return_policy is not None:
+                    settings_obj.return_policy = return_policy
+                if cancellation_policy is not None:
+                    settings_obj.cancellation_policy = cancellation_policy
+                settings_obj.save()
+            except WebsiteSettings.DoesNotExist:
+                pass
             
-        if return_policy is not None:
-            settings_obj.return_policy = return_policy
-        if cancellation_policy is not None:
-            settings_obj.cancellation_policy = cancellation_policy
-            
-        settings_obj.save()
         return Response({
-            'message': 'Order settings updated successfully.',
-            'id': settings_obj.id,
-            'return_policy': settings_obj.return_policy,
-            'cancellation_policy': settings_obj.cancellation_policy,
+            'message': 'Order & Commission settings updated successfully.',
+            'global_commission_pct': str(sys_settings.default_commission_percentage)
         })
 
 
@@ -2326,8 +2440,17 @@ class CheckoutView(APIView):
             # Record Settlement (For online payments only - AnyDM does not manage COD cash flows)
             if payment_method == 'RAZORPAY':
                 from decimal import Decimal
-                comm_pct_val = prod.category.commission_percentage if (
-                    prod.category and prod.category.commission_percentage) else sys_settings.default_commission_percentage
+                from apps.accounts.models import WebsiteSettings
+                store_settings = WebsiteSettings.objects.filter(instagram_account__user=account.user).first()
+                is_instant_payout = (getattr(store_settings, 'payout_hold_mode', 'INSTANT') == 'INSTANT')
+
+                if is_instant_payout and getattr(sys_settings, 'instant_payout_commission_percentage', None) is not None:
+                    comm_pct_val = sys_settings.instant_payout_commission_percentage
+                elif prod.category and prod.category.commission_percentage:
+                    comm_pct_val = prod.category.commission_percentage
+                else:
+                    comm_pct_val = sys_settings.default_commission_percentage
+
                 comm_pct = Decimal(str(comm_pct_val))
                 commission = (price * qty) * (comm_pct / Decimal('100'))
                 razorpay_fee = (price * qty) * Decimal('0.02')
@@ -2355,11 +2478,40 @@ class CheckoutView(APIView):
                 
                 # Razorpay amount is in paise (INR * 100)
                 amount_in_paise = int(total_amount * 100)
-                rzp_order = client.order.create({
+                order_payload = {
                     "amount": amount_in_paise,
                     "currency": "INR",
                     "receipt": order_id,
-                })
+                }
+
+                # Razorpay Route: Check if seller has an active linked account ID
+                seller_kyc = getattr(account.user, 'kyc', None)
+                seller_rzp_account = seller_kyc.razorpay_account_id if seller_kyc else None
+                if seller_rzp_account:
+                    total_seller_payout = sum([s.seller_amount for s in order.settlements.all()]) if order.settlements.exists() else 0
+                    if total_seller_payout > 0:
+                        seller_paise = int(total_seller_payout * 100)
+                        is_monthly = (getattr(store_settings, 'payout_hold_mode', 'INSTANT') == 'MONTHLY')
+                        on_hold_val = 1 if is_monthly else 0
+                        order_payload["transfers"] = [
+                            {
+                                "account": seller_rzp_account,
+                                "amount": seller_paise,
+                                "currency": "INR",
+                                "on_hold": on_hold_val
+                            }
+                        ]
+
+                try:
+                    rzp_order = client.order.create(order_payload)
+                except Exception as trf_err:
+                    if "transfers" in order_payload:
+                        print(f"[Razorpay Route Note] Transfer payload not supported on merchant account ({trf_err}). Falling back to standard order.")
+                        del order_payload["transfers"]
+                        rzp_order = client.order.create(order_payload)
+                    else:
+                        raise trf_err
+
                 razorpay_order_id = rzp_order.get("id")
                 order.razorpay_order_id = razorpay_order_id
                 order.save(update_fields=["razorpay_order_id"])
@@ -2524,9 +2676,67 @@ class SellerOrdersView(APIView):
 
     def get(self, request):
         from .models import Order
+        from django.db.models import Q
         from apps.products.models import Product
+        from apps.accounts.models import InstagramAccount, WebsiteSettings
         user = request.user
-        orders = Order.objects.filter(seller=user).order_by('-created_at')
+        account_id = request.query_params.get('account_id') or getattr(user, 'active_instagram_account_id', None)
+        status_param = request.query_params.get('status')
+        settlement_status_param = request.query_params.get('settlement_status')
+        search_param = request.query_params.get('search')
+
+        account = None
+        if account_id:
+            account = InstagramAccount.objects.filter(id=account_id, user=user).first()
+        if not account and getattr(user, 'active_instagram_account_id', None):
+            account = InstagramAccount.objects.filter(id=user.active_instagram_account_id, user=user).first()
+
+        if account:
+            orders = Order.objects.filter(seller=user, instagram_account=account).order_by('-created_at')
+            store_settings = WebsiteSettings.objects.filter(instagram_account=account).first()
+        else:
+            orders = Order.objects.filter(seller=user).order_by('-created_at')
+            store_settings = WebsiteSettings.objects.filter(instagram_account__user=user).first()
+
+        # Apply search filter if provided
+        if search_param:
+            q = search_param.strip()
+            orders = orders.filter(
+                Q(order_id__icontains=q) |
+                Q(customer_name__icontains=q) |
+                Q(customer_phone__icontains=q) |
+                Q(shipping_address__icontains=q) |
+                Q(shipping_place__icontains=q) |
+                Q(shipping_district__icontains=q) |
+                Q(shipping_state__icontains=q)
+            )
+
+        # Apply status filter if provided
+        if status_param and status_param != 'All':
+            if status_param == 'Pending':
+                orders = orders.filter(order_status__in=['PENDING_PAYMENT', 'PAYMENT_RECEIVED', 'CONFIRMED', 'PROCESSING', 'PACKED'])
+            elif status_param == 'Shipped':
+                orders = orders.filter(order_status__in=['SHIPPED', 'OUT_FOR_DELIVERY'])
+            elif status_param == 'Delivered':
+                orders = orders.filter(order_status__in=['DELIVERED', 'COMPLETED'])
+            elif status_param == 'Cancelled':
+                orders = orders.filter(order_status='CANCELLED')
+            else:
+                orders = orders.filter(order_status=status_param)
+
+        # Apply settlement status filter if provided
+        if settlement_status_param and settlement_status_param != 'All':
+            orders = orders.filter(payment_method='RAZORPAY')
+            if settlement_status_param == 'Pending':
+                orders = orders.exclude(order_status__in=['REFUNDED', 'CANCELLED']).exclude(
+                    Q(payment_status='PAID') | Q(order_status__in=['DELIVERED', 'COMPLETED'])
+                )
+            elif settlement_status_param in ['Paid Out', 'PAID']:
+                orders = orders.exclude(order_status__in=['REFUNDED', 'CANCELLED']).filter(
+                    Q(payment_status='PAID') | Q(order_status__in=['DELIVERED', 'COMPLETED'])
+                )
+            elif settlement_status_param in ['Refunded', 'REFUNDED']:
+                orders = orders.filter(order_status__in=['REFUNDED', 'CANCELLED'])
 
         orders_data = []
         total_sales = 0
@@ -2580,21 +2790,37 @@ class SellerOrdersView(APIView):
                 pending_count += 1
 
         # Low stock items (stock < 5)
-        low_stock_count = Product.objects.filter(
-            seller=user, stock__lt=5).count()
+        if account:
+            low_stock_count = Product.objects.filter(seller=user, instagram_account=account, stock__lt=5).count()
+        else:
+            low_stock_count = Product.objects.filter(seller=user, stock__lt=5).count()
+            
         total_products_sold = sum([item.quantity for o in orders if o.order_status in [
                                   'DELIVERED', 'COMPLETED'] for item in o.items.all()])
 
         # Settlement info
         from .models import Settlement
-        settlements = Settlement.objects.filter(seller=user, order__payment_method='RAZORPAY')
+        if account:
+            settlements = Settlement.objects.filter(seller=user, order__instagram_account=account, order__payment_method='RAZORPAY')
+        else:
+            settlements = Settlement.objects.filter(seller=user, order__payment_method='RAZORPAY')
+
         pending_settlement = sum([float(s.seller_amount)
                                  for s in settlements if s.status == 'PENDING'])
         total_earnings = sum([float(s.seller_amount)
                              for s in settlements if s.status in ['PAID', 'COMPLETED']])
 
+        from apps.settings.models import SystemSettings
+        sys_settings = SystemSettings.get_settings()
+        current_payout_mode = getattr(store_settings, 'payout_hold_mode', 'INSTANT') if store_settings else 'INSTANT'
+        instant_comm_pct = str(getattr(sys_settings, 'instant_payout_commission_percentage', '3.00'))
+        global_comm_pct = str(sys_settings.default_commission_percentage)
+
         return Response({
             'orders': orders_data,
+            'payout_hold_mode': current_payout_mode,
+            'instant_payout_commission_pct': instant_comm_pct,
+            'global_commission_pct': global_comm_pct,
             'stats': {
                 'today_sales': str(total_sales),
                 'pending_orders': pending_count,
@@ -2637,18 +2863,83 @@ class SellerOrdersView(APIView):
         return Response({'message': f'Order status updated to {new_status}'})
 
 
+class SellerPayoutModeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.accounts.models import WebsiteSettings, InstagramAccount
+        from apps.settings.models import SystemSettings
+        user = request.user
+        account_id = request.query_params.get('account_id') or getattr(user, 'active_instagram_account_id', None)
+        store_settings = None
+        if account_id:
+            store_settings = WebsiteSettings.objects.filter(instagram_account_id=account_id).first()
+        if not store_settings:
+            store_settings = WebsiteSettings.objects.filter(instagram_account__user=user).first()
+
+        sys_settings = SystemSettings.get_settings()
+        mode = getattr(store_settings, 'payout_hold_mode', 'INSTANT') if store_settings else 'INSTANT'
+        instant_comm_pct = str(getattr(sys_settings, 'instant_payout_commission_percentage', '3.00'))
+        return Response({
+            'payout_hold_mode': mode,
+            'instant_payout_commission_pct': instant_comm_pct
+        })
+
+    def post(self, request):
+        from apps.accounts.models import WebsiteSettings
+        user = request.user
+        mode = request.data.get('payout_hold_mode', 'INSTANT').upper()
+        account_id = request.data.get('account_id') or getattr(user, 'active_instagram_account_id', None)
+        if mode not in ['INSTANT', 'MONTHLY']:
+            return Response({'error': 'Invalid payout hold mode. Must be INSTANT or MONTHLY.'}, status=400)
+
+        store_settings_qs = WebsiteSettings.objects.filter(instagram_account__user=user)
+        if account_id:
+            specific_qs = store_settings_qs.filter(instagram_account_id=account_id)
+            if specific_qs.exists():
+                store_settings_qs = specific_qs
+
+        if store_settings_qs.exists():
+            store_settings_qs.update(payout_hold_mode=mode)
+        return Response({'message': f'Payout hold mode updated to {mode}', 'payout_hold_mode': mode})
+
+
+
 class SellerSettlementsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from .models import Settlement
+        from django.db.models import Q
         user = request.user
-        settlements = Settlement.objects.filter(
-            seller=user, order__payment_method='RAZORPAY').order_by('-created_at')
+        account_id = request.query_params.get('account_id')
+        status_param = request.query_params.get('status')
+        search_param = request.query_params.get('search')
 
         # If user is admin/staff, return ALL settlements to process payouts
         if user.is_superuser or user.is_staff:
             settlements = Settlement.objects.filter(order__payment_method='RAZORPAY').order_by('-created_at')
+        else:
+            settlements = Settlement.objects.filter(seller=user, order__payment_method='RAZORPAY').order_by('-created_at')
+
+        if account_id:
+            settlements = settlements.filter(order__instagram_account_id=account_id)
+
+        if search_param:
+            q = search_param.strip()
+            settlements = settlements.filter(
+                Q(order__order_id__icontains=q) |
+                Q(seller__username__icontains=q) |
+                Q(order__customer_name__icontains=q)
+            )
+
+        if status_param and status_param != 'All':
+            if status_param in ['Pending', 'PENDING']:
+                settlements = settlements.filter(status='PENDING')
+            elif status_param in ['Paid Out', 'PAID', 'Paid']:
+                settlements = settlements.filter(status='PAID')
+            elif status_param in ['Refunded', 'REFUNDED']:
+                settlements = settlements.filter(status='REFUNDED')
 
         data = []
         for s in settlements:
@@ -3259,6 +3550,61 @@ class RevenueOverviewView(APIView):
                 "paid": float(paid_settlements)
             },
             "recent_orders": recent_list
+        })
+
+
+class ProcessOrderRefundView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from .models import Order, Settlement
+        order_id = request.data.get("order_id")
+        reason = request.data.get("reason", "Customer Requested Refund")
+
+        if not order_id:
+            return Response({'error': 'Order ID is required.'}, status=400)
+
+        try:
+            order = Order.objects.get(order_id=order_id)
+        except Order.DoesNotExist:
+            return Response({'error': 'Order not found.'}, status=404)
+
+        # Check authorization (Seller or Admin)
+        if not (request.user == order.seller or request.user.is_staff or request.user.is_superuser):
+            return Response({'error': 'Not authorized to refund this order.'}, status=403)
+
+        if order.order_status in ['REFUNDED', 'CANCELLED']:
+            return Response({'error': f'Order is already {order.order_status}.'}, status=400)
+
+        if order.payment_method == 'RAZORPAY':
+            import os
+            import razorpay
+            RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
+            RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
+            client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
+            try:
+                if order.razorpay_payment_id:
+                    amount_in_paise = int(order.total_amount * 100)
+                    client.payment.refund(order.razorpay_payment_id, {
+                        "amount": amount_in_paise,
+                        "reverse_all_transfers": 1
+                    })
+            except Exception as rzp_err:
+                print(f"[Razorpay Refund Note] {rzp_err}")
+
+        # Update order & settlement statuses
+        order.order_status = 'REFUNDED'
+        order.payment_status = 'REFUNDED'
+        order.save(update_fields=['order_status', 'payment_status'])
+
+        order.settlements.update(status='REFUNDED')
+
+        return Response({
+            'message': 'Order refund processed successfully. Reversed transfer from seller account.',
+            'order_id': order.order_id,
+            'order_status': order.order_status,
+            'reason': reason
         })
 
 

@@ -13,7 +13,21 @@ class CachingDevSettingAdmin(admin.ModelAdmin):
 @admin.register(SystemSettings)
 class SystemSettingsAdmin(admin.ModelAdmin):
     list_display = ('premium_plan_price', 'trial_days', 'enable_ai', 'enable_subscription_ai', 'updated_at')
-    fields = ('premium_plan_price', 'trial_days', 'extend_days', 'referral_points', 'points_to_redeem', 'enable_ai', 'enable_subscription_ai', 'business_gemini_api_key')
+    fieldsets = (
+        ('Pricing & Trial', {
+            'fields': ('premium_plan_price', 'trial_days', 'extend_days')
+        }),
+        ('Referral & Points', {
+            'fields': ('referral_points', 'points_to_redeem')
+        }),
+        ('Official Instagram Follow Reward', {
+            'fields': ('official_follow_points',),
+            'description': 'Configure the follow reward points.'
+        }),
+        ('AI Features', {
+            'fields': ('enable_ai', 'enable_subscription_ai', 'business_gemini_api_key')
+        }),
+    )
 
     def has_add_permission(self, request):
         if SystemSettings.objects.exists():
