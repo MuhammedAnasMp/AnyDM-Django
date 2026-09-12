@@ -1059,7 +1059,85 @@ class WebsiteSettingsView(APIView):
             'custom_settings', settings_obj.custom_settings)
         settings_obj.save()
 
-        return Response({'message': 'Website settings updated successfully'}, status=status.HTTP_200_OK)
+        cf_res = None
+        if settings_obj.custom_domain:
+            cf_res = sync_cloudflare_custom_domain(settings_obj.custom_domain)
+
+        return Response({
+            'message': 'Website settings updated successfully',
+            'cloudflare': cf_res
+        }, status=status.HTTP_200_OK)
+
+
+def sync_cloudflare_custom_domain(hostname):
+    """
+    Registers a custom domain with Cloudflare Custom Hostnames API for SaaS SSL termination.
+    """
+    if not hostname:
+        return None
+    import logging
+    logger = logging.getLogger(__name__)
+
+    clean_hostname = hostname.strip().lower()
+    clean_hostname = re.sub(r'^https?://', '', clean_hostname).strip('/')
+
+    cf_token = os.getenv('CLOUDFLARE_API_TOKEN', getattr(settings, 'CLOUDFLARE_API_TOKEN', ''))
+    cf_zone_id = os.getenv('CLOUDFLARE_ZONE_ID', getattr(settings, 'CLOUDFLARE_ZONE_ID', ''))
+
+    if not cf_token or not cf_zone_id:
+        return {
+            'status': 'skipped',
+            'message': 'Cloudflare API token/zone ID not configured on backend. Domain saved in system.'
+        }
+
+    url = f"https://api.cloudflare.com/client/v4/zones/{cf_zone_id}/custom_hostnames"
+    headers = {
+        "Authorization": f"Bearer {cf_token}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "hostname": clean_hostname,
+        "ssl": {
+            "method": "http",
+            "type": "dv"
+        }
+    }
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        res_data = res.json()
+        if res_data.get('success'):
+            return {
+                'status': 'success',
+                'message': 'Custom domain registered on Cloudflare! SSL certificate auto-provisioning initiated.',
+                'result': res_data.get('result')
+            }
+        else:
+            errors = res_data.get('errors', [])
+            error_msg = errors[0].get('message', 'Cloudflare API error') if errors else 'Cloudflare API call failed'
+            return {'status': 'error', 'message': error_msg}
+    except Exception as e:
+        logger.error("Cloudflare Custom Hostname creation error: %s", e)
+        return {'status': 'error', 'message': str(e)}
+
+
+class SyncCloudflareCustomDomainView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        settings_obj = WebsiteSettings.objects.filter(user=user).first()
+        if not settings_obj or not settings_obj.custom_domain:
+            return Response({'error': 'No custom domain configured for your store.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        domain = settings_obj.custom_domain
+        cf_res = sync_cloudflare_custom_domain(domain)
+
+        return Response({
+            'message': f'Cloudflare sync initiated for {domain}',
+            'domain': domain,
+            'cloudflare': cf_res
+        }, status=status.HTTP_200_OK)
+
 
 
 class PublicStorefrontView(APIView):

@@ -15,6 +15,7 @@ from .views import (
     InstagramMediaListView,
     InstagramMediaProxyView,
     WebsiteSettingsView,
+    SyncCloudflareCustomDomainView,
     PublicStorefrontView,
     PublicProductDetailView,
     ReferralStatsView,
@@ -62,6 +63,7 @@ urlpatterns = [
     path('instagram/media-list/', InstagramMediaListView.as_view(), name='instagram-media-list'),
     path('instagram/proxy-media/', InstagramMediaProxyView.as_view(), name='instagram-media-proxy'),
     path('website-settings/', WebsiteSettingsView.as_view(), name='website-settings'),
+    path('website-settings/sync-cloudflare/', SyncCloudflareCustomDomainView.as_view(), name='website-settings-sync-cloudflare'),
     path('public/store/<str:username>/', PublicStorefrontView.as_view(), name='public-storefront'),
     path('public/store/<str:username>/product/<int:product_id>/', PublicProductDetailView.as_view(), name='public-product-detail'),
     
