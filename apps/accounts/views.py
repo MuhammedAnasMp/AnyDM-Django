@@ -1069,9 +1069,55 @@ class WebsiteSettingsView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+def sync_cloudflare_fallback_origin(origin_hostname=None):
+    """
+    Sets or checks Cloudflare for SaaS Fallback Origin status.
+    PUT/GET /zones/{zone_id}/custom_hostnames/fallback_origin
+    """
+    cf_token = os.getenv('CLOUDFLARE_API_TOKEN', getattr(settings, 'CLOUDFLARE_API_TOKEN', ''))
+    cf_zone_id = os.getenv('CLOUDFLARE_ZONE_ID', getattr(settings, 'CLOUDFLARE_ZONE_ID', ''))
+    fallback_origin = origin_hostname or os.getenv('CLOUDFLARE_FALLBACK_ORIGIN', getattr(settings, 'CLOUDFLARE_FALLBACK_ORIGIN', ''))
+
+    if not cf_token or not cf_zone_id:
+        return {
+            'status': 'skipped',
+            'message': 'Cloudflare API token/zone ID not configured.'
+        }
+
+    url = f"https://api.cloudflare.com/client/v4/zones/{cf_zone_id}/custom_hostnames/fallback_origin"
+    headers = {
+        "Authorization": f"Bearer {cf_token}",
+        "Content-Type": "application/json"
+    }
+    try:
+        if fallback_origin:
+            clean_origin = fallback_origin.strip().lower()
+            clean_origin = re.sub(r'^https?://', '', clean_origin).strip('/')
+            res = requests.put(url, json={"origin": clean_origin}, headers=headers, timeout=10)
+        else:
+            res = requests.get(url, headers=headers, timeout=10)
+
+        res_data = res.json()
+        if res_data.get('success'):
+            res_result = res_data.get('result', {})
+            return {
+                'status': 'success',
+                'fallback_origin': res_result.get('origin'),
+                'origin_status': res_result.get('status', 'active'),
+                'result': res_result
+            }
+        else:
+            errors = res_data.get('errors', [])
+            error_msg = errors[0].get('message', 'Cloudflare API error') if errors else 'Failed to set fallback origin'
+            return {'status': 'error', 'message': error_msg}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+
 def sync_cloudflare_custom_domain(hostname):
     """
     Registers a custom domain with Cloudflare Custom Hostnames API for SaaS SSL termination.
+    Supports fetching existing custom hostname status, DCV Delegation, and Fallback Origin status.
     """
     if not hostname:
         return None
@@ -1087,7 +1133,7 @@ def sync_cloudflare_custom_domain(hostname):
     if not cf_token or not cf_zone_id:
         return {
             'status': 'skipped',
-            'message': 'Cloudflare API token/zone ID not configured on backend. Domain saved in system.'
+            'message': 'Cloudflare API token/zone ID not configured on backend. Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ZONE_ID to server environment variables.'
         }
 
     url = f"https://api.cloudflare.com/client/v4/zones/{cf_zone_id}/custom_hostnames"
@@ -1105,11 +1151,37 @@ def sync_cloudflare_custom_domain(hostname):
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=10)
         res_data = res.json()
+
+        # If hostname already exists on Cloudflare, fetch existing custom hostname record
+        if not res_data.get('success'):
+            errors = res_data.get('errors', [])
+            error_code = errors[0].get('code') if errors else None
+            if error_code == 1406 or 'already exists' in str(res_data):
+                get_res = requests.get(f"{url}?hostname={clean_hostname}", headers=headers, timeout=10)
+                get_data = get_res.json()
+                if get_data.get('success') and get_data.get('result'):
+                    res_data = {
+                        'success': True,
+                        'result': get_data['result'][0]
+                    }
+
         if res_data.get('success'):
+            result = res_data.get('result', {})
+            ssl_info = result.get('ssl', {})
+            ownership_info = result.get('ownership_verification', {})
+            dcv_delegation = ssl_info.get('dcv_delegation_records') or ssl_info.get('validation_records') or []
+            fallback_status = sync_cloudflare_fallback_origin()
+
             return {
                 'status': 'success',
+                'hostname': clean_hostname,
+                'ssl_status': ssl_info.get('status', 'pending_validation'),
+                'ownership_status': result.get('status', 'pending'),
+                'ownership_verification': ownership_info,
+                'dcv_delegation': dcv_delegation,
+                'fallback_origin': fallback_status,
                 'message': 'Custom domain registered on Cloudflare! SSL certificate auto-provisioning initiated.',
-                'result': res_data.get('result')
+                'result': result
             }
         else:
             errors = res_data.get('errors', [])
