@@ -1125,7 +1125,12 @@ class SyncCloudflareCustomDomainView(APIView):
 
     def post(self, request):
         user = request.user
-        settings_obj = WebsiteSettings.objects.filter(user=user).first()
+        active_account = getattr(user, 'active_instagram_account', None) or user.instagram_accounts.filter(is_active=True).first()
+        if active_account:
+            settings_obj = WebsiteSettings.objects.filter(instagram_account=active_account).first()
+        else:
+            settings_obj = WebsiteSettings.objects.filter(instagram_account__user=user).first()
+
         if not settings_obj or not settings_obj.custom_domain:
             return Response({'error': 'No custom domain configured for your store.'}, status=status.HTTP_400_BAD_REQUEST)
 
