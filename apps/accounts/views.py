@@ -1114,10 +1114,44 @@ def sync_cloudflare_fallback_origin(origin_hostname=None):
         return {'status': 'error', 'message': str(e)}
 
 
+def sync_vercel_custom_domain(hostname):
+    """
+    Registers a custom domain with Vercel API for multi-tenant Next.js routing.
+    POST https://api.vercel.com/v10/projects/{project}/domains
+    """
+    vercel_token = os.getenv('VERCEL_API_TOKEN', getattr(settings, 'VERCEL_API_TOKEN', ''))
+    vercel_project_id = os.getenv('VERCEL_PROJECT_ID', getattr(settings, 'VERCEL_PROJECT_ID', ''))
+
+    if not vercel_token or not vercel_project_id:
+        return {'status': 'skipped', 'message': 'Vercel API token or project ID not configured on backend.'}
+
+    clean_hostname = hostname.strip().lower()
+    clean_hostname = re.sub(r'^https?://', '', clean_hostname).strip('/')
+
+    url = f"https://api.vercel.com/v10/projects/{vercel_project_id}/domains"
+
+    headers = {
+        "Authorization": f"Bearer {vercel_token}",
+        "Content-Type": "application/json"
+    }
+    payload = {"name": clean_hostname}
+
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        res_data = res.json()
+        if res.status_code in [200, 201] or 'already_exists' in str(res_data):
+            return {'status': 'success', 'domain': clean_hostname, 'vercel': res_data}
+        else:
+            error_msg = res_data.get('error', {}).get('message', 'Vercel API error')
+            return {'status': 'error', 'message': error_msg}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+
 def sync_cloudflare_custom_domain(hostname):
     """
-    Registers a custom domain with Cloudflare Custom Hostnames API for SaaS SSL termination.
-    Supports fetching existing custom hostname status, DCV Delegation, and Fallback Origin status.
+    Registers a custom domain with Cloudflare Custom Hostnames API & Vercel Project Domains API.
+    Supports fetching existing custom hostname status, DCV Delegation, Fallback Origin, and Vercel routing.
     """
     if not hostname:
         return None
@@ -1127,12 +1161,16 @@ def sync_cloudflare_custom_domain(hostname):
     clean_hostname = hostname.strip().lower()
     clean_hostname = re.sub(r'^https?://', '', clean_hostname).strip('/')
 
+    # Automatically sync domain with Vercel Project Domains API for Next.js routing
+    vercel_res = sync_vercel_custom_domain(clean_hostname)
+
     cf_token = os.getenv('CLOUDFLARE_API_TOKEN', getattr(settings, 'CLOUDFLARE_API_TOKEN', ''))
     cf_zone_id = os.getenv('CLOUDFLARE_ZONE_ID', getattr(settings, 'CLOUDFLARE_ZONE_ID', ''))
 
     if not cf_token or not cf_zone_id:
         return {
             'status': 'skipped',
+            'vercel': vercel_res,
             'message': 'Cloudflare API token/zone ID not configured on backend. Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ZONE_ID to server environment variables.'
         }
 
@@ -1180,16 +1218,17 @@ def sync_cloudflare_custom_domain(hostname):
                 'ownership_verification': ownership_info,
                 'dcv_delegation': dcv_delegation,
                 'fallback_origin': fallback_status,
-                'message': 'Custom domain registered on Cloudflare! SSL certificate auto-provisioning initiated.',
+                'vercel': vercel_res,
+                'message': 'Custom domain registered on Cloudflare & Vercel! SSL certificate auto-provisioning initiated.',
                 'result': result
             }
         else:
             errors = res_data.get('errors', [])
             error_msg = errors[0].get('message', 'Cloudflare API error') if errors else 'Cloudflare API call failed'
-            return {'status': 'error', 'message': error_msg}
+            return {'status': 'error', 'message': error_msg, 'vercel': vercel_res}
     except Exception as e:
         logger.error("Cloudflare Custom Hostname creation error: %s", e)
-        return {'status': 'error', 'message': str(e)}
+        return {'status': 'error', 'message': str(e), 'vercel': vercel_res}
 
 
 class SyncCloudflareCustomDomainView(APIView):
