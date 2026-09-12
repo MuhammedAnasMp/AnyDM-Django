@@ -73,13 +73,13 @@ CORS_ALLOWED_ORIGINS = [
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
-    r"^https:\/\/.*\.zoyee\.in$",
-    r"^https:\/\/.*\.anydm\.in$",
-    r"^http:\/\/.*\.zoyee\.in$",
-    r"^https:\/\/.*\.locanydm\.online$",
-    r"^http:\/\/.*\.locanydm\.online$",
-    r"^https:\/\/.*\.vercel\.app$",
-    r"^http:\/\/.*\.vercel\.app$",
+    r"^https:\/\/(.*\.)?zoyee\.in$",
+    r"^https:\/\/(.*\.)?anydm\.in$",
+    r"^http:\/\/(.*\.)?zoyee\.in$",
+    r"^https:\/\/(.*\.)?locanydm\.online$",
+    r"^http:\/\/(.*\.)?locanydm\.online$",
+    r"^https:\/\/(.*\.)?vercel\.app$",
+    r"^http:\/\/(.*\.)?vercel\.app$",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -217,12 +217,6 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 WHITENOISE_USE_FINDERS = True
-CORS_ALLOW_ALL_ORIGINS = True
-
-CORS_ALLOW_HEADERS = list(default_headers) + [
-    'ngrok-skip-browser-warning',
-    'x-bypass-cache',
-]
 
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
