@@ -1840,13 +1840,13 @@ class AIAssistantConfigView(APIView):
         if account_id:
             account = InstagramAccount.objects.filter(
                 id=account_id, user=user).first()
-            if not account:
-                return None
-        else:
-            account = user.active_instagram_account
-            if not account:
-                account = InstagramAccount.objects.filter(
-                    user=user, is_active=True).first()
+            if account:
+                return account
+
+        account = getattr(user, 'active_instagram_account', None)
+        if not account:
+            account = InstagramAccount.objects.filter(
+                user=user, is_active=True).first() or InstagramAccount.objects.filter(user=user).first()
         return account
 
     def get(self, request):

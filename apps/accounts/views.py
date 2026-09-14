@@ -60,6 +60,51 @@ def get_tokens_for_user(user):
     }
 
 
+def generate_clean_unique_username(name="", email="", uid=""):
+    """
+    Generate a clean, readable username derived from first/last name or email prefix.
+    Ensures length is not too large (max 15 chars) and prevents duplicates with numeric suffixes.
+    """
+    base_name = ""
+
+    if name and name.strip():
+        first_word = name.strip().split()[0]
+        base_name = re.sub(r'[^a-zA-Z0-9_]', '', first_word).lower()
+
+    if not base_name and email and '@' in email and not email.endswith('@anydm.internal'):
+        email_prefix = email.split('@')[0]
+        base_name = re.sub(r'[^a-zA-Z0-9_]', '', email_prefix).lower()
+
+    if not base_name:
+        clean_uid = re.sub(r'[^a-zA-Z0-9]', '', str(uid or '')).lower()
+        base_name = f"user_{clean_uid[:6]}" if clean_uid else "user"
+
+    base_name = base_name[:15]
+    if len(base_name) < 3:
+        base_name = f"{base_name}user"[:15]
+
+    candidate = base_name
+    counter = 1
+    while User.objects.filter(username__iexact=candidate).exists():
+        suffix = f"_{counter}"
+        max_base_len = max(3, 15 - len(suffix))
+        candidate = f"{base_name[:max_base_len]}{suffix}"
+        counter += 1
+
+    return candidate
+
+
+def get_clean_first_name(name="", email=""):
+    if name and name.strip():
+        return name.strip()
+    if email and '@' in email and not email.endswith('@anydm.internal'):
+        prefix = email.split('@')[0]
+        parts = [p.capitalize() for p in re.split(r'[^a-zA-Z0-9]', prefix) if p]
+        if parts:
+            return " ".join(parts[:2])
+    return ""
+
+
 class FirebaseLoginView(APIView):
     def post(self, request):
         id_token = request.data.get('id_token')
@@ -87,11 +132,14 @@ class FirebaseLoginView(APIView):
                 user = User.objects.filter(email=email).first()
 
             if not user:
-                # 3. Create new if absolutely no match
+                # 3. Create new with clean, readable username & display name
+                clean_username = generate_clean_unique_username(name=name, email=email, uid=uid)
+                clean_first_name = get_clean_first_name(name=name, email=email)
+
                 user = User.objects.create(
-                    username=uid,
+                    username=clean_username,
                     email=email,
-                    first_name=name,
+                    first_name=clean_first_name,
                     firebase_uid=uid
                 )
                 print(f"[FirebaseLogin] Created new user: {user.username}")
@@ -125,8 +173,13 @@ class FirebaseLoginView(APIView):
                 # Sync info
                 if not user.firebase_uid:
                     user.firebase_uid = uid
-                if not user.first_name and name:
-                    user.first_name = name
+                if not user.first_name:
+                    clean_first_name = get_clean_first_name(name=name, email=email)
+                    if clean_first_name:
+                        user.first_name = clean_first_name
+                # Upgrade raw firebase_uid usernames to clean usernames
+                if user.username == uid or (len(user.username) > 24 and not user.username.startswith("ig_")):
+                    user.username = generate_clean_unique_username(name=user.first_name or name, email=email, uid=uid)
                 user.save()
                 print(f"[FirebaseLogin] Found existing user: {user.username}")
 
@@ -776,12 +829,21 @@ class InstagramStoriesView(APIView):
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
 
         user = request.user
-        active_account = user.active_instagram_account
+        active_account = getattr(user, 'active_instagram_account', None)
+
+        # Fallback to first active Instagram account if context is missing or token is blank
+        if not active_account or not active_account.access_token:
+            valid_account = user.instagram_accounts.filter(is_active=True).exclude(access_token='').exclude(access_token__isnull=True).first()
+            if valid_account:
+                active_account = valid_account
+                user.active_instagram_account = valid_account
+                user.save(update_fields=['active_instagram_account'])
+
         if not active_account:
             return Response({'error': 'Please connect at least one Instagram account to continue.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if not active_account.access_token:
-            return Response({'error': 'Instagram account access token is missing'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Instagram account access token is missing. Please reconnect your Instagram account.'}, status=status.HTTP_400_BAD_REQUEST)
 
         user_id = active_account.instagram_user_id or active_account.instagram_scoped_id
         if not user_id:
@@ -824,12 +886,21 @@ class InstagramMediaListView(APIView):
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
 
         user = request.user
-        active_account = user.active_instagram_account
+        active_account = getattr(user, 'active_instagram_account', None)
+
+        # Fallback to first active Instagram account if context is missing or token is blank
+        if not active_account or not active_account.access_token:
+            valid_account = user.instagram_accounts.filter(is_active=True).exclude(access_token='').exclude(access_token__isnull=True).first()
+            if valid_account:
+                active_account = valid_account
+                user.active_instagram_account = valid_account
+                user.save(update_fields=['active_instagram_account'])
+
         if not active_account:
             return Response({'error': 'Please connect at least one Instagram account to continue.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if not active_account.access_token:
-            return Response({'error': 'Instagram account access token is missing'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Instagram account access token is missing. Please reconnect your Instagram account.'}, status=status.HTTP_400_BAD_REQUEST)
 
         user_id = active_account.instagram_user_id or active_account.instagram_scoped_id
         if not user_id:
@@ -1538,12 +1609,16 @@ class PublicProductDetailView(APIView):
 # ── Refer & Earn & Subscription Support Views ───────────────────────────
 
 def serialize_user_payload(user):
+    display = user.first_name or get_clean_first_name(name=user.first_name, email=user.email) or user.username
+    if display == user.firebase_uid or (len(display) > 24 and not display.startswith("ig_")):
+        display = get_clean_first_name(email=user.email) or "User"
+
     payload = {
         'id': user.id,
         'username': user.username,
         'email': user.email,
         'login_methods': user.login_methods if isinstance(user.login_methods, list) else [],
-        'display_name': user.first_name or user.username,
+        'display_name': display,
         'photo_url': getattr(user, 'photo_url', None),
         'active_instagram_account_id': user.active_instagram_account_id,
         'plan': user.plan,
@@ -2068,19 +2143,36 @@ class CreatorEarningsView(APIView):
                 'created_at': c.created_at.isoformat(),
             })
 
-        # Referral stats
-        total_referrals = User.objects.filter(referred_by=user).count()
-        paid_referrals = User.objects.filter(referred_by=user, referral_paid_reward_given=True).count()
+        # Referral stats & list
+        referred_qs = User.objects.filter(referred_by=user).order_by('-date_joined')
+        total_referrals = referred_qs.count()
+        paid_referrals = referred_qs.filter(referral_paid_reward_given=True).count()
+
+        referred_users_list = []
+        for ref_u in referred_qs[:30]:
+            referred_users_list.append({
+                'username': ref_u.username,
+                'display_name': ref_u.first_name or ref_u.username,
+                'date_joined': ref_u.date_joined.isoformat(),
+                'is_premium_active': ref_u.is_premium_active,
+                'profile_picture_url': getattr(ref_u, 'active_instagram_account', None).profile_picture_url if getattr(ref_u, 'active_instagram_account', None) else None,
+            })
 
         return Response({
             'reward_type': user.creator_reward_type,
             'commission_percent': float(user.creator_commission_percent) if user.creator_commission_percent else 10.0,
+            'creator_program_expires_at': user.creator_program_expires_at.isoformat() if getattr(user, 'creator_program_expires_at', None) else None,
+            'is_creator_program_active': getattr(user, 'is_creator_program_active', False),
+            'plan': getattr(user, 'plan', 'free'),
+            'plan_expires_at': user.plan_expires_at.isoformat() if getattr(user, 'plan_expires_at', None) else None,
+            'points': user.points,
             'total_earned': float(total_earned),
             'total_pending': float(total_pending),
             'total_paid': float(total_paid),
             'commissions': commissions_list,
             'total_referrals': total_referrals,
             'paid_referrals': paid_referrals,
+            'referred_users': referred_users_list,
         }, status=status.HTTP_200_OK)
 
 
