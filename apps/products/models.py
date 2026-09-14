@@ -1,5 +1,5 @@
 from django.dispatch import receiver
-from django.db.models.signals import post_delete
+from django.db.models.signals import post_delete, pre_save
 import os
 import logging
 import requests
@@ -329,3 +329,31 @@ def delete_product_media_cloudinary_media(sender, instance, **kwargs):
     public_id, resource_type = get_public_id_and_type(instance)
     if public_id:
         delete_from_cloudinary(public_id, resource_type)
+
+
+@receiver(pre_save, sender=Product)
+def delete_replaced_product_cloudinary_media(sender, instance, **kwargs):
+    if not instance.pk:
+        return
+    try:
+        old_instance = Product.objects.get(pk=instance.pk)
+        if old_instance.main_media_url and old_instance.main_media_url != instance.main_media_url:
+            public_id, resource_type = get_public_id_and_type(old_instance)
+            if public_id:
+                delete_from_cloudinary(public_id, resource_type)
+    except Product.DoesNotExist:
+        pass
+
+
+@receiver(pre_save, sender=ProductMedia)
+def delete_replaced_product_media_cloudinary_media(sender, instance, **kwargs):
+    if not instance.pk:
+        return
+    try:
+        old_instance = ProductMedia.objects.get(pk=instance.pk)
+        if old_instance.media_url and old_instance.media_url != instance.media_url:
+            public_id, resource_type = get_public_id_and_type(old_instance)
+            if public_id:
+                delete_from_cloudinary(public_id, resource_type)
+    except ProductMedia.DoesNotExist:
+        pass

@@ -368,7 +368,8 @@ class InstagramWebhookView(View):
             from apps.settings.redis_client import get_setting_value
             forward_url = get_setting_value("FORWARD_WEBHOOK_URL")
             send_only_dev_setting = get_setting_value("wb_send_only_for_dev")
-            send_only_dev = send_only_dev_setting is not None and str(send_only_dev_setting).lower() in ["true", "1", "yes", "enabled"]
+            send_only_dev = send_only_dev_setting is not None and str(
+                send_only_dev_setting).lower() in ["true", "1", "yes", "enabled"]
 
             if forward_url:
                 from urllib.parse import urlparse
@@ -868,7 +869,8 @@ class InstagramWebhookView(View):
                                     customer.username = username
                                     customer.save(update_fields=['username'])
                                 if not customer.full_name or customer.is_following_business is None:
-                                    sync_customer_profile_task.delay(customer.id)
+                                    sync_customer_profile_task.delay(
+                                        customer.id)
 
                         if customer:
                             interaction = CustomerInteraction.objects.create(
@@ -1012,13 +1014,14 @@ class InstagramConversationsView(APIView):
                 user=user, is_active=True).first()
 
         if not account:
-            return Response({'error': 'No active Instagram account found'}, status=400)
+            return Response({'error': 'No active account. Connect an Instagram account.'}, status=400)
 
         # Refresh token if needed
         try:
             account.refresh_token_if_needed()
         except Exception as e:
-            logger.error(f"Error checking/refreshing token for {account.username}: {e}")
+            logger.error(
+                f"Error checking/refreshing token for {account.username}: {e}")
 
         if account.is_token_expired:
             return Response({
@@ -1170,7 +1173,7 @@ class InstagramConversationMessagesView(APIView):
                 user=user, is_active=True).first()
 
         if not account:
-            return Response({'error': 'No active Instagram account found'}, status=400)
+            return Response({'error': 'No active account. Connect an Instagram account.'}, status=400)
 
         access_token = account.access_token
         if not access_token:
@@ -1315,7 +1318,7 @@ class CustomerEnquiriesView(APIView):
                 is_active=True).first()
 
         if not active_account:
-            return Response({"error": "No active Instagram account found"}, status=400)
+            return Response({"error": "No active account. Connect an Instagram account."}, status=400)
 
         # Find the customer
         customer = Customer.objects.filter(
@@ -1370,7 +1373,7 @@ class DeleteEnquiryProductView(APIView):
                     is_active=True).first()
 
             if not active_account:
-                return Response({"error": "No active Instagram account found"}, status=400)
+                return Response({"error": "No active account. Connect an Instagram account."}, status=400)
 
             # Ensure the enquiry product belongs to the user's active account
             enquiry_product = EnquiryProduct.objects.get(
@@ -1401,7 +1404,7 @@ class SendInstagramMessageView(APIView):
                 is_active=True).first()
 
         if not active_account or not active_account.access_token:
-            return Response({"error": "No active Instagram account connected"}, status=400)
+            return Response({"error": "Please connect at least one Instagram account to continue."}, status=400)
 
         recipient_id = request.data.get("recipient_id")
         if not recipient_id:
@@ -1646,7 +1649,8 @@ class CustomerListView(APIView):
                 is_within_24h_window = seconds_remaining_24h > 0
                 is_within_23h_window = seconds_remaining_23h > 0
 
-            fg = customer.follower_gains.first() if hasattr(customer, 'follower_gains') else None
+            fg = customer.follower_gains.first() if hasattr(
+                customer, 'follower_gains') else None
 
             results.append({
                 "id": customer.id,
@@ -1693,7 +1697,7 @@ class BroadcastMessageView(APIView):
                 is_active=True).first()
 
         if not active_account or not active_account.access_token:
-            return Response({"error": "No active Instagram account connected"}, status=400)
+            return Response({"error": "Please connect at least one Instagram account to continue."}, status=400)
 
         recipient_ids = request.data.get("recipient_ids", [])
         message_payload = request.data.get("message_payload")
@@ -1848,7 +1852,7 @@ class AIAssistantConfigView(APIView):
     def get(self, request):
         account = self._resolve_account(request)
         if not account:
-            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+            return Response({"error": "Please connect at least one Instagram account to continue. or invalid account_id"}, status=400)
 
         config, created = AIAssistantConfig.objects.get_or_create(
             instagram_account=account)
@@ -1880,7 +1884,7 @@ class AIAssistantConfigView(APIView):
     def post(self, request):
         account = self._resolve_account(request)
         if not account:
-            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+            return Response({"error": "Please connect at least one Instagram account to continue. or invalid account_id"}, status=400)
 
         config, created = AIAssistantConfig.objects.get_or_create(
             instagram_account=account)
@@ -1978,7 +1982,7 @@ class AIAssistantToggleGlobalView(APIView):
                 account = InstagramAccount.objects.filter(
                     user=user, is_active=True).first()
         if not account:
-            return Response({"error": "No active Instagram account connected"}, status=400)
+            return Response({"error": "Please connect at least one Instagram account to continue."}, status=400)
 
         config, created = AIAssistantConfig.objects.get_or_create(
             instagram_account=account)
@@ -2041,9 +2045,11 @@ class SellerKYCView(APIView):
         pan_number = request.data.get('pan_number', '').strip().upper()
         aadhaar_number = request.data.get('aadhaar_number', '').strip()
         bank_name = request.data.get('bank_name', '').strip()
-        bank_account_number = request.data.get('bank_account_number', '').strip()
+        bank_account_number = request.data.get(
+            'bank_account_number', '').strip()
         bank_ifsc = request.data.get('bank_ifsc', '').strip().upper()
-        custom_rzp_account = request.data.get('razorpay_account_id', '').strip()
+        custom_rzp_account = request.data.get(
+            'razorpay_account_id', '').strip()
 
         if len(full_name) < 3:
             return Response({'error': 'Full name must be at least 3 characters.'}, status=400)
@@ -2094,7 +2100,8 @@ def sync_razorpay_route_account(seller_kyc):
     import os
     import razorpay
     RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
-    RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
+    RAZORPAY_KEY_SECRET = os.getenv(
+        "RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
 
     client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
     account_payload = {
@@ -2113,9 +2120,11 @@ def sync_razorpay_route_account(seller_kyc):
     }
     try:
         rzp_account = client.account.create(account_payload)
-        account_id = rzp_account.get("id") if isinstance(rzp_account, dict) else None
+        account_id = rzp_account.get("id") if isinstance(
+            rzp_account, dict) else None
         if not account_id:
-            raise Exception("Razorpay API response did not contain a valid Account ID.")
+            raise Exception(
+                "Razorpay API response did not contain a valid Account ID.")
         seller_kyc.razorpay_account_id = account_id
         seller_kyc.save(update_fields=["razorpay_account_id"])
         return seller_kyc.razorpay_account_id
@@ -2130,10 +2139,10 @@ class AdminKYCListView(APIView):
     def get(self, request):
         if not (request.user.is_staff or request.user.is_superuser):
             return Response({'error': 'Only administrators can view seller KYC list.'}, status=403)
-        
+
         from apps.accounts.models import SellerKYC
         kyc_records = SellerKYC.objects.all().order_by('-updated_at')
-        
+
         data = []
         for record in kyc_records:
             data.append({
@@ -2157,17 +2166,17 @@ class AdminKYCListView(APIView):
     def post(self, request):
         if not (request.user.is_staff or request.user.is_superuser):
             return Response({'error': 'Only administrators can approve KYC submissions.'}, status=403)
-            
+
         kyc_id = request.data.get('kyc_id')
-        action = request.data.get('action') # 'APPROVE' or 'REJECT'
+        action = request.data.get('action')  # 'APPROVE' or 'REJECT'
         custom_rzp_account = request.data.get('razorpay_account_id')
-        
+
         from apps.accounts.models import SellerKYC
         try:
             record = SellerKYC.objects.get(id=kyc_id)
         except SellerKYC.DoesNotExist:
             return Response({'error': 'KYC record not found.'}, status=404)
-            
+
         if action == 'APPROVE':
             if custom_rzp_account:
                 record.razorpay_account_id = custom_rzp_account
@@ -2188,10 +2197,11 @@ class AdminKYCListView(APIView):
             record.save(update_fields=["status"])
             # Automatically enable COD and disable Online Payments in WebsiteSettings when KYC is rejected
             from apps.accounts.models import WebsiteSettings
-            WebsiteSettings.objects.filter(instagram_account__user=record.user).update(cod_enabled=True, online_payment_enabled=False)
+            WebsiteSettings.objects.filter(instagram_account__user=record.user).update(
+                cod_enabled=True, online_payment_enabled=False)
         else:
             return Response({'error': 'Invalid action. Must be APPROVE or REJECT.'}, status=400)
-            
+
         return Response({'message': f'KYC status updated to {record.status}', 'status': record.status, 'razorpay_account_id': record.razorpay_account_id})
 
 
@@ -2201,14 +2211,15 @@ class AdminOrderSettingsView(APIView):
     def get(self, request):
         if not (request.user.is_staff or request.user.is_superuser):
             return Response({'error': 'Only administrators can view order settings.'}, status=403)
-        
+
         from apps.accounts.models import WebsiteSettings
         from apps.settings.models import SystemSettings
         from apps.products.models import Category
 
         sys_settings = SystemSettings.get_settings()
-        settings = WebsiteSettings.objects.all().select_related('instagram_account').order_by('store_name')
-        
+        settings = WebsiteSettings.objects.all().select_related(
+            'instagram_account').order_by('store_name')
+
         data = []
         for s in settings:
             data.append({
@@ -2220,7 +2231,8 @@ class AdminOrderSettingsView(APIView):
                 'cancellation_policy': s.cancellation_policy,
             })
 
-        categories = Category.objects.all().values('id', 'name', 'commission_percentage')
+        categories = Category.objects.all().values(
+            'id', 'name', 'commission_percentage')
         category_list = []
         for c in categories:
             category_list.append({
@@ -2239,7 +2251,7 @@ class AdminOrderSettingsView(APIView):
     def post(self, request):
         if not (request.user.is_staff or request.user.is_superuser):
             return Response({'error': 'Only administrators can modify order settings.'}, status=403)
-        
+
         from decimal import Decimal
         from apps.accounts.models import WebsiteSettings
         from apps.settings.models import SystemSettings
@@ -2247,7 +2259,8 @@ class AdminOrderSettingsView(APIView):
 
         global_comm = request.data.get('global_commission_pct')
         instant_payout_comm = request.data.get('instant_payout_commission_pct')
-        category_comms = request.data.get('category_commissions') # [{id: 1, commission_percentage: 5.0}]
+        # [{id: 1, commission_percentage: 5.0}]
+        category_comms = request.data.get('category_commissions')
         settings_id = request.data.get('settings_id')
         return_policy = request.data.get('return_policy')
         cancellation_policy = request.data.get('cancellation_policy')
@@ -2255,17 +2268,23 @@ class AdminOrderSettingsView(APIView):
         sys_settings = SystemSettings.get_settings()
         if global_comm is not None:
             try:
-                sys_settings.default_commission_percentage = Decimal(str(global_comm))
-                sys_settings.save(update_fields=['default_commission_percentage'])
+                sys_settings.default_commission_percentage = Decimal(
+                    str(global_comm))
+                sys_settings.save(
+                    update_fields=['default_commission_percentage'])
             except Exception as err:
-                print(f"[AdminOrderSettings] Error updating global comm: {err}")
+                print(
+                    f"[AdminOrderSettings] Error updating global comm: {err}")
 
         if instant_payout_comm is not None:
             try:
-                sys_settings.instant_payout_commission_percentage = Decimal(str(instant_payout_comm))
-                sys_settings.save(update_fields=['instant_payout_commission_percentage'])
+                sys_settings.instant_payout_commission_percentage = Decimal(
+                    str(instant_payout_comm))
+                sys_settings.save(
+                    update_fields=['instant_payout_commission_percentage'])
             except Exception as err:
-                print(f"[AdminOrderSettings] Error updating instant payout comm: {err}")
+                print(
+                    f"[AdminOrderSettings] Error updating instant payout comm: {err}")
 
         if category_comms and isinstance(category_comms, list):
             for item in category_comms:
@@ -2273,9 +2292,11 @@ class AdminOrderSettingsView(APIView):
                 cat_pct = item.get('commission_percentage')
                 if cat_id and cat_pct is not None:
                     try:
-                        Category.objects.filter(id=cat_id).update(commission_percentage=Decimal(str(cat_pct)))
+                        Category.objects.filter(id=cat_id).update(
+                            commission_percentage=Decimal(str(cat_pct)))
                     except Exception as cat_err:
-                        print(f"[AdminOrderSettings] Error updating category comm: {cat_err}")
+                        print(
+                            f"[AdminOrderSettings] Error updating category comm: {cat_err}")
 
         if settings_id:
             try:
@@ -2287,7 +2308,7 @@ class AdminOrderSettingsView(APIView):
                 settings_obj.save()
             except WebsiteSettings.DoesNotExist:
                 pass
-            
+
         return Response({
             'message': 'Order & Commission settings updated successfully.',
             'global_commission_pct': str(sys_settings.default_commission_percentage)
@@ -2331,9 +2352,11 @@ class CheckoutView(APIView):
         domain_no_www = clean_username.replace('www.', '')
         domain_with_www = f"www.{domain_no_www}"
 
-        account = InstagramAccount.objects.filter(username__iexact=clean_username, is_active=True).first()
+        account = InstagramAccount.objects.filter(
+            username__iexact=clean_username, is_active=True).first()
         if not account:
-            account = InstagramAccount.objects.filter(username__iexact=clean_username).first()
+            account = InstagramAccount.objects.filter(
+                username__iexact=clean_username).first()
 
         if not account:
             ws = WebsiteSettings.objects.filter(
@@ -2441,8 +2464,10 @@ class CheckoutView(APIView):
             if payment_method == 'RAZORPAY':
                 from decimal import Decimal
                 from apps.accounts.models import WebsiteSettings
-                store_settings = WebsiteSettings.objects.filter(instagram_account__user=account.user).first()
-                is_instant_payout = (getattr(store_settings, 'payout_hold_mode', 'INSTANT') == 'INSTANT')
+                store_settings = WebsiteSettings.objects.filter(
+                    instagram_account__user=account.user).first()
+                is_instant_payout = (
+                    getattr(store_settings, 'payout_hold_mode', 'INSTANT') == 'INSTANT')
 
                 if is_instant_payout and getattr(sys_settings, 'instant_payout_commission_percentage', None) is not None:
                     comm_pct_val = sys_settings.instant_payout_commission_percentage
@@ -2472,10 +2497,13 @@ class CheckoutView(APIView):
             try:
                 import razorpay
                 import os
-                RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
-                RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
-                client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
-                
+                RAZORPAY_KEY_ID = os.getenv(
+                    "RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
+                RAZORPAY_KEY_SECRET = os.getenv(
+                    "RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
+                client = razorpay.Client(
+                    auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
                 # Razorpay amount is in paise (INR * 100)
                 amount_in_paise = int(total_amount * 100)
                 order_payload = {
@@ -2488,10 +2516,12 @@ class CheckoutView(APIView):
                 seller_kyc = getattr(account.user, 'kyc', None)
                 seller_rzp_account = seller_kyc.razorpay_account_id if seller_kyc else None
                 if seller_rzp_account:
-                    total_seller_payout = sum([s.seller_amount for s in order.settlements.all()]) if order.settlements.exists() else 0
+                    total_seller_payout = sum([s.seller_amount for s in order.settlements.all(
+                    )]) if order.settlements.exists() else 0
                     if total_seller_payout > 0:
                         seller_paise = int(total_seller_payout * 100)
-                        is_monthly = (getattr(store_settings, 'payout_hold_mode', 'INSTANT') == 'MONTHLY')
+                        is_monthly = (
+                            getattr(store_settings, 'payout_hold_mode', 'INSTANT') == 'MONTHLY')
                         on_hold_val = 1 if is_monthly else 0
                         order_payload["transfers"] = [
                             {
@@ -2506,7 +2536,8 @@ class CheckoutView(APIView):
                     rzp_order = client.order.create(order_payload)
                 except Exception as trf_err:
                     if "transfers" in order_payload:
-                        print(f"[Razorpay Route Note] Transfer payload not supported on merchant account ({trf_err}). Falling back to standard order.")
+                        print(
+                            f"[Razorpay Route Note] Transfer payload not supported on merchant account ({trf_err}). Falling back to standard order.")
                         del order_payload["transfers"]
                         rzp_order = client.order.create(order_payload)
                     else:
@@ -2526,7 +2557,8 @@ class CheckoutView(APIView):
                 from apps.automations.engine import send_instagram_dm
                 # Find customer scoped ID from recent messages if matching contact exists
                 customer = Customer.objects.filter(owner=account).filter(
-                    Q(full_name__iexact=customer_name) | Q(username__iexact=customer_name)
+                    Q(full_name__iexact=customer_name) | Q(
+                        username__iexact=customer_name)
                 ).first()
                 if customer:
                     # Validate 24-hour window
@@ -2579,8 +2611,10 @@ class ConfirmPaymentView(APIView):
         # Verify payment signature
         import razorpay
         import os
-        RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
-        RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
+        RAZORPAY_KEY_ID = os.getenv(
+            "RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
+        RAZORPAY_KEY_SECRET = os.getenv(
+            "RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
         client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
         try:
@@ -2597,14 +2631,16 @@ class ConfirmPaymentView(APIView):
         order.order_status = 'PAYMENT_RECEIVED'
         order.razorpay_payment_id = razorpay_payment_id
         order.razorpay_signature = razorpay_signature
-        order.save(update_fields=['payment_status', 'order_status', 'razorpay_payment_id', 'razorpay_signature'])
+        order.save(update_fields=[
+                   'payment_status', 'order_status', 'razorpay_payment_id', 'razorpay_signature'])
 
         # Optional: Send Instagram DM Confirmation for verified order
         try:
             from apps.automations.engine import send_instagram_dm
             # Find customer scoped ID from recent messages if matching contact exists
             customer = Customer.objects.filter(owner=order.instagram_account).filter(
-                Q(full_name__iexact=order.customer_name) | Q(username__iexact=order.customer_name)
+                Q(full_name__iexact=order.customer_name) | Q(
+                    username__iexact=order.customer_name)
             ).first()
             if customer:
                 # Validate 24-hour window
@@ -2680,23 +2716,29 @@ class SellerOrdersView(APIView):
         from apps.products.models import Product
         from apps.accounts.models import InstagramAccount, WebsiteSettings
         user = request.user
-        account_id = request.query_params.get('account_id') or getattr(user, 'active_instagram_account_id', None)
+        account_id = request.query_params.get('account_id') or getattr(
+            user, 'active_instagram_account_id', None)
         status_param = request.query_params.get('status')
         settlement_status_param = request.query_params.get('settlement_status')
         search_param = request.query_params.get('search')
 
         account = None
         if account_id:
-            account = InstagramAccount.objects.filter(id=account_id, user=user).first()
+            account = InstagramAccount.objects.filter(
+                id=account_id, user=user).first()
         if not account and getattr(user, 'active_instagram_account_id', None):
-            account = InstagramAccount.objects.filter(id=user.active_instagram_account_id, user=user).first()
+            account = InstagramAccount.objects.filter(
+                id=user.active_instagram_account_id, user=user).first()
 
         if account:
-            orders = Order.objects.filter(seller=user, instagram_account=account).order_by('-created_at')
-            store_settings = WebsiteSettings.objects.filter(instagram_account=account).first()
+            orders = Order.objects.filter(
+                seller=user, instagram_account=account).order_by('-created_at')
+            store_settings = WebsiteSettings.objects.filter(
+                instagram_account=account).first()
         else:
             orders = Order.objects.filter(seller=user).order_by('-created_at')
-            store_settings = WebsiteSettings.objects.filter(instagram_account__user=user).first()
+            store_settings = WebsiteSettings.objects.filter(
+                instagram_account__user=user).first()
 
         # Apply search filter if provided
         if search_param:
@@ -2714,11 +2756,14 @@ class SellerOrdersView(APIView):
         # Apply status filter if provided
         if status_param and status_param != 'All':
             if status_param == 'Pending':
-                orders = orders.filter(order_status__in=['PENDING_PAYMENT', 'PAYMENT_RECEIVED', 'CONFIRMED', 'PROCESSING', 'PACKED'])
+                orders = orders.filter(order_status__in=[
+                                       'PENDING_PAYMENT', 'PAYMENT_RECEIVED', 'CONFIRMED', 'PROCESSING', 'PACKED'])
             elif status_param == 'Shipped':
-                orders = orders.filter(order_status__in=['SHIPPED', 'OUT_FOR_DELIVERY'])
+                orders = orders.filter(
+                    order_status__in=['SHIPPED', 'OUT_FOR_DELIVERY'])
             elif status_param == 'Delivered':
-                orders = orders.filter(order_status__in=['DELIVERED', 'COMPLETED'])
+                orders = orders.filter(
+                    order_status__in=['DELIVERED', 'COMPLETED'])
             elif status_param == 'Cancelled':
                 orders = orders.filter(order_status='CANCELLED')
             else:
@@ -2729,14 +2774,17 @@ class SellerOrdersView(APIView):
             orders = orders.filter(payment_method='RAZORPAY')
             if settlement_status_param == 'Pending':
                 orders = orders.exclude(order_status__in=['REFUNDED', 'CANCELLED']).exclude(
-                    Q(payment_status='PAID') | Q(order_status__in=['DELIVERED', 'COMPLETED'])
+                    Q(payment_status='PAID') | Q(
+                        order_status__in=['DELIVERED', 'COMPLETED'])
                 )
             elif settlement_status_param in ['Paid Out', 'PAID']:
                 orders = orders.exclude(order_status__in=['REFUNDED', 'CANCELLED']).filter(
-                    Q(payment_status='PAID') | Q(order_status__in=['DELIVERED', 'COMPLETED'])
+                    Q(payment_status='PAID') | Q(
+                        order_status__in=['DELIVERED', 'COMPLETED'])
                 )
             elif settlement_status_param in ['Refunded', 'REFUNDED']:
-                orders = orders.filter(order_status__in=['REFUNDED', 'CANCELLED'])
+                orders = orders.filter(
+                    order_status__in=['REFUNDED', 'CANCELLED'])
 
         orders_data = []
         total_sales = 0
@@ -2757,9 +2805,11 @@ class SellerOrdersView(APIView):
             # Fetch settlement details for this order
             from .models import Settlement
             order_settlements = Settlement.objects.filter(order=order)
-            total_seller_amount = sum([s.seller_amount for s in order_settlements])
+            total_seller_amount = sum(
+                [s.seller_amount for s in order_settlements])
             total_commission = sum([s.commission for s in order_settlements])
-            total_razorpay_fee = sum([s.razorpay_fee for s in order_settlements])
+            total_razorpay_fee = sum(
+                [s.razorpay_fee for s in order_settlements])
 
             orders_data.append({
                 'id': order.id,
@@ -2791,19 +2841,23 @@ class SellerOrdersView(APIView):
 
         # Low stock items (stock < 5)
         if account:
-            low_stock_count = Product.objects.filter(seller=user, instagram_account=account, stock__lt=5).count()
+            low_stock_count = Product.objects.filter(
+                seller=user, instagram_account=account, stock__lt=5).count()
         else:
-            low_stock_count = Product.objects.filter(seller=user, stock__lt=5).count()
-            
+            low_stock_count = Product.objects.filter(
+                seller=user, stock__lt=5).count()
+
         total_products_sold = sum([item.quantity for o in orders if o.order_status in [
                                   'DELIVERED', 'COMPLETED'] for item in o.items.all()])
 
         # Settlement info
         from .models import Settlement
         if account:
-            settlements = Settlement.objects.filter(seller=user, order__instagram_account=account, order__payment_method='RAZORPAY')
+            settlements = Settlement.objects.filter(
+                seller=user, order__instagram_account=account, order__payment_method='RAZORPAY')
         else:
-            settlements = Settlement.objects.filter(seller=user, order__payment_method='RAZORPAY')
+            settlements = Settlement.objects.filter(
+                seller=user, order__payment_method='RAZORPAY')
 
         pending_settlement = sum([float(s.seller_amount)
                                  for s in settlements if s.status == 'PENDING'])
@@ -2812,8 +2866,10 @@ class SellerOrdersView(APIView):
 
         from apps.settings.models import SystemSettings
         sys_settings = SystemSettings.get_settings()
-        current_payout_mode = getattr(store_settings, 'payout_hold_mode', 'INSTANT') if store_settings else 'INSTANT'
-        instant_comm_pct = str(getattr(sys_settings, 'instant_payout_commission_percentage', '3.00'))
+        current_payout_mode = getattr(
+            store_settings, 'payout_hold_mode', 'INSTANT') if store_settings else 'INSTANT'
+        instant_comm_pct = str(
+            getattr(sys_settings, 'instant_payout_commission_percentage', '3.00'))
         global_comm_pct = str(sys_settings.default_commission_percentage)
 
         return Response({
@@ -2870,16 +2926,21 @@ class SellerPayoutModeView(APIView):
         from apps.accounts.models import WebsiteSettings, InstagramAccount
         from apps.settings.models import SystemSettings
         user = request.user
-        account_id = request.query_params.get('account_id') or getattr(user, 'active_instagram_account_id', None)
+        account_id = request.query_params.get('account_id') or getattr(
+            user, 'active_instagram_account_id', None)
         store_settings = None
         if account_id:
-            store_settings = WebsiteSettings.objects.filter(instagram_account_id=account_id).first()
+            store_settings = WebsiteSettings.objects.filter(
+                instagram_account_id=account_id).first()
         if not store_settings:
-            store_settings = WebsiteSettings.objects.filter(instagram_account__user=user).first()
+            store_settings = WebsiteSettings.objects.filter(
+                instagram_account__user=user).first()
 
         sys_settings = SystemSettings.get_settings()
-        mode = getattr(store_settings, 'payout_hold_mode', 'INSTANT') if store_settings else 'INSTANT'
-        instant_comm_pct = str(getattr(sys_settings, 'instant_payout_commission_percentage', '3.00'))
+        mode = getattr(store_settings, 'payout_hold_mode',
+                       'INSTANT') if store_settings else 'INSTANT'
+        instant_comm_pct = str(
+            getattr(sys_settings, 'instant_payout_commission_percentage', '3.00'))
         return Response({
             'payout_hold_mode': mode,
             'instant_payout_commission_pct': instant_comm_pct
@@ -2889,20 +2950,22 @@ class SellerPayoutModeView(APIView):
         from apps.accounts.models import WebsiteSettings
         user = request.user
         mode = request.data.get('payout_hold_mode', 'INSTANT').upper()
-        account_id = request.data.get('account_id') or getattr(user, 'active_instagram_account_id', None)
+        account_id = request.data.get('account_id') or getattr(
+            user, 'active_instagram_account_id', None)
         if mode not in ['INSTANT', 'MONTHLY']:
             return Response({'error': 'Invalid payout hold mode. Must be INSTANT or MONTHLY.'}, status=400)
 
-        store_settings_qs = WebsiteSettings.objects.filter(instagram_account__user=user)
+        store_settings_qs = WebsiteSettings.objects.filter(
+            instagram_account__user=user)
         if account_id:
-            specific_qs = store_settings_qs.filter(instagram_account_id=account_id)
+            specific_qs = store_settings_qs.filter(
+                instagram_account_id=account_id)
             if specific_qs.exists():
                 store_settings_qs = specific_qs
 
         if store_settings_qs.exists():
             store_settings_qs.update(payout_hold_mode=mode)
         return Response({'message': f'Payout hold mode updated to {mode}', 'payout_hold_mode': mode})
-
 
 
 class SellerSettlementsView(APIView):
@@ -2918,12 +2981,15 @@ class SellerSettlementsView(APIView):
 
         # If user is admin/staff, return ALL settlements to process payouts
         if user.is_superuser or user.is_staff:
-            settlements = Settlement.objects.filter(order__payment_method='RAZORPAY').order_by('-created_at')
+            settlements = Settlement.objects.filter(
+                order__payment_method='RAZORPAY').order_by('-created_at')
         else:
-            settlements = Settlement.objects.filter(seller=user, order__payment_method='RAZORPAY').order_by('-created_at')
+            settlements = Settlement.objects.filter(
+                seller=user, order__payment_method='RAZORPAY').order_by('-created_at')
 
         if account_id:
-            settlements = settlements.filter(order__instagram_account_id=account_id)
+            settlements = settlements.filter(
+                order__instagram_account_id=account_id)
 
         if search_param:
             q = search_param.strip()
@@ -2987,19 +3053,22 @@ class PersistentMenuView(APIView):
 
     def _resolve_account(self, request):
         user = request.user
-        account_id = request.query_params.get("account_id") or request.data.get("account_id")
+        account_id = request.query_params.get(
+            "account_id") or request.data.get("account_id")
         if account_id:
-            account = InstagramAccount.objects.filter(id=account_id, user=user).first()
+            account = InstagramAccount.objects.filter(
+                id=account_id, user=user).first()
         else:
             account = getattr(user, 'active_instagram_account', None)
             if not account:
-                account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+                account = InstagramAccount.objects.filter(
+                    user=user, is_active=True).first()
         return account
 
     def get(self, request):
         account = self._resolve_account(request)
         if not account:
-            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+            return Response({"error": "Please connect at least one Instagram account to continue. or invalid account_id"}, status=400)
 
         account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
         url = f"https://graph.instagram.com/v26.0/{account_id}/messenger_profile?fields=persistent_menu"
@@ -3012,10 +3081,12 @@ class PersistentMenuView(APIView):
                 if items:
                     persistent_menu = items[0].get("persistent_menu", [])
                     from apps.accounts.models import WebsiteSettings
-                    settings = WebsiteSettings.objects.filter(instagram_account=account).first()
+                    settings = WebsiteSettings.objects.filter(
+                        instagram_account=account).first()
                     retry_limit = 3
                     if settings and settings.custom_settings:
-                        retry_limit = settings.custom_settings.get("order_track_retry_limit", 3)
+                        retry_limit = settings.custom_settings.get(
+                            "order_track_retry_limit", 3)
                     return Response({
                         "persistent_menu": persistent_menu,
                         "order_track_retry_limit": retry_limit
@@ -3029,11 +3100,13 @@ class PersistentMenuView(APIView):
     def post(self, request):
         account = self._resolve_account(request)
         if not account:
-            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+            return Response({"error": "Please connect at least one Instagram account to continue. or invalid account_id"}, status=400)
 
-        composer_input_disabled = request.data.get("composer_input_disabled", False)
+        composer_input_disabled = request.data.get(
+            "composer_input_disabled", False)
         call_to_actions = request.data.get("call_to_actions", [])
-        order_track_retry_limit = request.data.get("order_track_retry_limit", 3)
+        order_track_retry_limit = request.data.get(
+            "order_track_retry_limit", 3)
 
         cta_payloads = []
         for cta in call_to_actions:
@@ -3049,7 +3122,8 @@ class PersistentMenuView(APIView):
             else:
                 payload_key = cta.get("payload")
                 if not payload_key:
-                    payload_key = re.sub(r'[^a-zA-Z0-9_]', '', title.strip().replace(' ', '_')).upper()
+                    payload_key = re.sub(
+                        r'[^a-zA-Z0-9_]', '', title.strip().replace(' ', '_')).upper()
                     if not payload_key:
                         payload_key = "MENU_ITEM"
                 cta_payloads.append({
@@ -3080,7 +3154,8 @@ class PersistentMenuView(APIView):
             if r.status_code == 200:
                 # Save a copy locally in WebsiteSettings for reference
                 from apps.accounts.models import WebsiteSettings
-                settings, _ = WebsiteSettings.objects.get_or_create(instagram_account=account)
+                settings, _ = WebsiteSettings.objects.get_or_create(
+                    instagram_account=account)
                 if not settings.custom_settings:
                     settings.custom_settings = {}
                 settings.custom_settings["persistent_menu"] = call_to_actions
@@ -3095,14 +3170,16 @@ class PersistentMenuView(APIView):
     def delete(self, request):
         account = self._resolve_account(request)
         if not account:
-            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+            return Response({"error": "Please connect at least one Instagram account to continue. or invalid account_id"}, status=400)
 
         # Also clean up any associated automation rules in the system
         try:
             from apps.automations.models import AutomationRule
-            AutomationRule.objects.filter(seller=account, name__startswith="Persistent Menu Flow").delete()
+            AutomationRule.objects.filter(
+                seller=account, name__startswith="Persistent Menu Flow").delete()
         except Exception as e:
-            logger.error(f"Error deleting persistent menu automation rules: {e}")
+            logger.error(
+                f"Error deleting persistent menu automation rules: {e}")
 
         account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
         url = f"https://graph.instagram.com/v26.0/{account_id}/messenger_profile?fields=['persistent_menu']"
@@ -3122,19 +3199,22 @@ class IceBreakersView(APIView):
 
     def _resolve_account(self, request):
         user = request.user
-        account_id = request.query_params.get("account_id") or request.data.get("account_id")
+        account_id = request.query_params.get(
+            "account_id") or request.data.get("account_id")
         if account_id:
-            account = InstagramAccount.objects.filter(id=account_id, user=user).first()
+            account = InstagramAccount.objects.filter(
+                id=account_id, user=user).first()
         else:
             account = getattr(user, 'active_instagram_account', None)
             if not account:
-                account = InstagramAccount.objects.filter(user=user, is_active=True).first()
+                account = InstagramAccount.objects.filter(
+                    user=user, is_active=True).first()
         return account
 
     def get(self, request):
         account = self._resolve_account(request)
         if not account:
-            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+            return Response({"error": "Please connect at least one Instagram account to continue. or invalid account_id"}, status=400)
 
         account_id = account.instagram_scoped_id or account.instagram_user_id or 'me'
         url = f"https://graph.instagram.com/v26.0/{account_id}/messenger_profile?fields=ice_breakers"
@@ -3156,7 +3236,7 @@ class IceBreakersView(APIView):
     def post(self, request):
         account = self._resolve_account(request)
         if not account:
-            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+            return Response({"error": "Please connect at least one Instagram account to continue. or invalid account_id"}, status=400)
 
         ice_breakers = request.data.get("ice_breakers", [])
         ib_payloads = []
@@ -3164,7 +3244,8 @@ class IceBreakersView(APIView):
             question = ib.get("question", "")[:80]
             payload_key = ib.get("payload")
             if not payload_key:
-                payload_key = re.sub(r'[^a-zA-Z0-9_]', '', question.strip().replace(' ', '_')).upper()
+                payload_key = re.sub(
+                    r'[^a-zA-Z0-9_]', '', question.strip().replace(' ', '_')).upper()
                 if not payload_key:
                     payload_key = "ICEBREAKER_ITEM"
             ib_payloads.append({
@@ -3189,7 +3270,8 @@ class IceBreakersView(APIView):
             if r.status_code == 200:
                 # Save a copy locally in WebsiteSettings for reference
                 from apps.accounts.models import WebsiteSettings
-                settings, _ = WebsiteSettings.objects.get_or_create(instagram_account=account)
+                settings, _ = WebsiteSettings.objects.get_or_create(
+                    instagram_account=account)
                 if not settings.custom_settings:
                     settings.custom_settings = {}
                 settings.custom_settings["ice_breakers"] = ice_breakers
@@ -3203,12 +3285,13 @@ class IceBreakersView(APIView):
     def delete(self, request):
         account = self._resolve_account(request)
         if not account:
-            return Response({"error": "No active Instagram account connected or invalid account_id"}, status=400)
+            return Response({"error": "Please connect at least one Instagram account to continue. or invalid account_id"}, status=400)
 
         # Also clean up any associated automation rules in the system
         try:
             from apps.automations.models import AutomationRule
-            AutomationRule.objects.filter(seller=account, name__startswith="Welcome Message Flow").delete()
+            AutomationRule.objects.filter(
+                seller=account, name__startswith="Welcome Message Flow").delete()
         except Exception as e:
             logger.error(f"Error deleting icebreaker automation rules: {e}")
 
@@ -3249,19 +3332,25 @@ class AnalyticsOverviewView(APIView):
             start_date = now - datetime.timedelta(days=90)
         elif timeframe == '1y':
             start_date = now - datetime.timedelta(days=365)
-        
+
         ig_accounts = user.instagram_accounts.all()
-        
+        account_id = request.query_params.get('account_id')
+        if account_id and str(account_id).isdigit():
+            ig_accounts = ig_accounts.filter(id=int(account_id))
+
         # Interactions query from CustomerInteraction table
-        interactions_qs = CustomerInteraction.objects.filter(seller_account__in=ig_accounts)
+        interactions_qs = CustomerInteraction.objects.filter(
+            seller_account__in=ig_accounts)
         if start_date:
-            interactions_qs = interactions_qs.filter(created_at__gte=start_date)
+            interactions_qs = interactions_qs.filter(
+                created_at__gte=start_date)
 
         total_interactions = interactions_qs.count()
         outbound_count = interactions_qs.filter(direction='OUTBOUND').count()
 
         # Direct calculation from user interactions
-        open_rate_val = round((outbound_count / total_interactions) * 100, 1) if total_interactions > 0 else 0.0
+        open_rate_val = round((outbound_count / total_interactions)
+                              * 100, 1) if total_interactions > 0 else 0.0
 
         # Calculate period bars directly from interactions database records
         bars = []
@@ -3271,13 +3360,15 @@ class AnalyticsOverviewView(APIView):
             for i in range(9):
                 t_sub_start = now - datetime.timedelta(hours=(9 - i) * 3)
                 t_sub_end = now - datetime.timedelta(hours=(8 - i) * 3)
-                sub_cnt = interactions_qs.filter(created_at__range=(t_sub_start, t_sub_end)).count()
+                sub_cnt = interactions_qs.filter(
+                    created_at__range=(t_sub_start, t_sub_end)).count()
                 period_counts.append(sub_cnt)
                 if sub_cnt > max_period_cnt:
                     max_period_cnt = sub_cnt
-            
+
             for i, cnt in enumerate(period_counts):
-                pct = int((cnt / max_period_cnt) * 100) if max_period_cnt > 0 else 0
+                pct = int((cnt / max_period_cnt) *
+                          100) if max_period_cnt > 0 else 0
                 bars.append({
                     "height": f"h-[{max(10, pct)}%]",
                     "showLabel": (cnt == max_period_cnt and cnt > 0),
@@ -3291,14 +3382,16 @@ class AnalyticsOverviewView(APIView):
         customers_qs = Customer.objects.filter(owner__in=ig_accounts)
         unique_customers = customers_qs.count()
         if total_interactions > 0 and unique_customers > 0:
-            engagement_score = min(100, int((outbound_count / total_interactions * 50) + (unique_customers / (total_interactions + 1) * 50)))
+            engagement_score = min(100, int(
+                (outbound_count / total_interactions * 50) + (unique_customers / (total_interactions + 1) * 50)))
         elif unique_customers > 0:
             engagement_score = min(100, unique_customers * 10)
         else:
             engagement_score = 0
 
         # Calculate average response speed from CustomerInteraction table
-        inbound_dms = interactions_qs.filter(direction='INBOUND').order_by('created_at')[:50]
+        inbound_dms = interactions_qs.filter(
+            direction='INBOUND').order_by('created_at')[:50]
         response_times = []
         for in_msg in inbound_dms:
             next_out = interactions_qs.filter(
@@ -3307,9 +3400,10 @@ class AnalyticsOverviewView(APIView):
                 created_at__gt=in_msg.created_at
             ).order_by('created_at').first()
             if next_out:
-                diff_sec = (next_out.created_at - in_msg.created_at).total_seconds()
+                diff_sec = (next_out.created_at -
+                            in_msg.created_at).total_seconds()
                 response_times.append(diff_sec)
-        
+
         if response_times:
             avg_sec = sum(response_times) / len(response_times)
             if avg_sec < 60:
@@ -3325,7 +3419,7 @@ class AnalyticsOverviewView(APIView):
             enquiries_qs = enquiries_qs.filter(created_at__gte=start_date)
         enquiry_count = enquiries_qs.count()
 
-        orders_qs = Order.objects.filter(seller=user)
+        orders_qs = Order.objects.filter(instagram_account__in=ig_accounts)
         if start_date:
             orders_qs = orders_qs.filter(created_at__gte=start_date)
         orders_count = orders_qs.count()
@@ -3373,7 +3467,8 @@ class AnalyticsOverviewView(APIView):
         rules = AutomationRule.objects.filter(seller__in=ig_accounts)
         aut_health = []
         for rule in rules:
-            rule_trig_count = interactions_qs.filter(message_source='AUTOMATION').count()
+            rule_trig_count = interactions_qs.filter(
+                message_source='AUTOMATION').count()
             aut_health.append({
                 "name": rule.name or rule.rule_type.replace("_", " ").title(),
                 "status": "Active" if rule.status == 'active' else "Paused",
@@ -3382,22 +3477,28 @@ class AnalyticsOverviewView(APIView):
             })
 
         # Top Products directly from Product & OrderItem tables
-        products = Product.objects.filter(seller=user)
+        products = Product.objects.filter(Q(instagram_account__in=ig_accounts) | Q(
+            seller=user, instagram_account__isnull=True))
         top_products = []
         for prod in products:
-            item_sales = OrderItem.objects.filter(product=prod, order__seller=user)
+            item_sales = OrderItem.objects.filter(
+                product=prod, order__instagram_account__in=ig_accounts)
             if start_date:
-                item_sales = item_sales.filter(order__created_at__gte=start_date)
-            qty = item_sales.aggregate(total_qty=Sum('quantity'))['total_qty'] or 0
-            tot_rev = item_sales.aggregate(total_val=Sum('price'))['total_val'] or (qty * (prod.price or 0))
+                item_sales = item_sales.filter(
+                    order__created_at__gte=start_date)
+            qty = item_sales.aggregate(total_qty=Sum('quantity'))[
+                'total_qty'] or 0
+            tot_rev = item_sales.aggregate(total_val=Sum('price'))[
+                'total_val'] or (qty * (prod.price or 0))
             top_products.append({
                 "name": prod.title or f"Product #{prod.id}",
                 "sales": f"₹{float(tot_rev):,.2f}",
                 "growth": f"{qty} sold"
             })
-        
+
         # Sort by total sales revenue
-        top_products = sorted(top_products, key=lambda x: x['sales'], reverse=True)[:4]
+        top_products = sorted(
+            top_products, key=lambda x: x['sales'], reverse=True)[:4]
 
         # Real Recent Activities from CustomerInteraction table
         recent_interactions = interactions_qs.order_by('-created_at')[:10]
@@ -3405,7 +3506,8 @@ class AnalyticsOverviewView(APIView):
         for act in recent_interactions:
             agent_name = f"IG Agent ({act.message_source or 'Auto'})" if act.direction == 'OUTBOUND' else f"Lead @{act.customer.username or 'user'}"
             desc = act.message_text or f"Customer interaction via {act.event_type}"
-            icon = "auto_awesome" if act.message_source == 'AI' else ("forum" if act.direction == 'OUTBOUND' else "person")
+            icon = "auto_awesome" if act.message_source == 'AI' else (
+                "forum" if act.direction == 'OUTBOUND' else "person")
             tags = [f"Event: {act.event_type}", f"Dir: {act.direction}"]
             recent_activities.append({
                 "agent": agent_name,
@@ -3416,8 +3518,10 @@ class AnalyticsOverviewView(APIView):
                 "isHighlight": act.event_type == 'DM' and act.direction == 'INBOUND'
             })
 
-        mrr_30d = float(Order.objects.filter(seller=user, order_status__in=['PAYMENT_RECEIVED', 'CONFIRMED', 'DELIVERED', 'COMPLETED'], created_at__gte=now-datetime.timedelta(days=30)).aggregate(total=Sum('total_amount'))['total'] or 0.0)
-        active_rules_count = AutomationRule.objects.filter(seller__in=ig_accounts, status='active').count()
+        mrr_30d = float(Order.objects.filter(instagram_account__in=ig_accounts, order_status__in=[
+                        'PAYMENT_RECEIVED', 'CONFIRMED', 'DELIVERED', 'COMPLETED'], created_at__gte=now-datetime.timedelta(days=30)).aggregate(total=Sum('total_amount'))['total'] or 0.0)
+        active_rules_count = AutomationRule.objects.filter(
+            seller__in=ig_accounts, status='active').count()
 
         kpi_summary = {
             "active_automations": active_rules_count,
@@ -3469,8 +3573,12 @@ class RevenueOverviewView(APIView):
             start_date = now - datetime.timedelta(days=365)
 
         orders_qs = Order.objects.filter(seller=user)
+        account_id = request.query_params.get('account_id')
+        if account_id and str(account_id).isdigit():
+            orders_qs = orders_qs.filter(instagram_account_id=int(account_id))
 
-        paid_statuses = ['PAYMENT_RECEIVED', 'CONFIRMED', 'PROCESSING', 'PACKED', 'SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'COMPLETED']
+        paid_statuses = ['PAYMENT_RECEIVED', 'CONFIRMED', 'PROCESSING',
+                         'PACKED', 'SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'COMPLETED']
         paid_orders = orders_qs.filter(order_status__in=paid_statuses)
 
         if start_date:
@@ -3481,24 +3589,32 @@ class RevenueOverviewView(APIView):
         # Calculate MRR (last 30 days revenue directly from Order table)
         mrr_start = now - datetime.timedelta(days=30)
         mrr_orders = paid_orders.filter(created_at__gte=mrr_start)
-        mrr_val = float(mrr_orders.aggregate(total=Sum('total_amount'))['total'] or 0.0)
+        mrr_val = float(mrr_orders.aggregate(
+            total=Sum('total_amount'))['total'] or 0.0)
 
         # ARR = MRR * 12
         arr_val = mrr_val * 12
 
         # AOV directly from Order table
-        timeframe_rev = float(timeframe_orders.aggregate(total=Sum('total_amount'))['total'] or 0.0)
+        timeframe_rev = float(timeframe_orders.aggregate(
+            total=Sum('total_amount'))['total'] or 0.0)
         timeframe_count = timeframe_orders.count()
-        aov_val = round(timeframe_rev / timeframe_count, 2) if timeframe_count > 0 else 0.0
+        aov_val = round(timeframe_rev / timeframe_count,
+                        2) if timeframe_count > 0 else 0.0
 
         # Calculate trajectory points across 12 periods directly from Order table
         chart_pts = []
         max_period_rev = 1.0
         period_revs = []
         for i in range(12):
-            p_start = now - datetime.timedelta(days=(12 - i) * (30 if timeframe == '1y' else 3))
-            p_end = now - datetime.timedelta(days=(11 - i) * (30 if timeframe == '1y' else 3))
-            period_val = float(paid_orders.filter(created_at__range=(p_start, p_end)).aggregate(total=Sum('total_amount'))['total'] or 0.0)
+            p_start = now - \
+                datetime.timedelta(
+                    days=(12 - i) * (30 if timeframe == '1y' else 3))
+            p_end = now - \
+                datetime.timedelta(
+                    days=(11 - i) * (30 if timeframe == '1y' else 3))
+            period_val = float(paid_orders.filter(created_at__range=(
+                p_start, p_end)).aggregate(total=Sum('total_amount'))['total'] or 0.0)
             period_revs.append(period_val)
             if period_val > max_period_rev:
                 max_period_rev = period_val
@@ -3511,13 +3627,17 @@ class RevenueOverviewView(APIView):
             chart_pts.append(pt_height)
 
         # Order Status Breakdown from Order table
-        status_counts = orders_qs.values('order_status').annotate(count=Count('id'), total=Sum('total_amount'))
-        status_summary = {item['order_status']: {"count": item['count'], "total": float(item['total'] or 0)} for item in status_counts}
+        status_counts = orders_qs.values('order_status').annotate(
+            count=Count('id'), total=Sum('total_amount'))
+        status_summary = {item['order_status']: {"count": item['count'], "total": float(
+            item['total'] or 0)} for item in status_counts}
 
         # Settlements directly from Settlement table
         settlements_qs = Settlement.objects.filter(seller=user)
-        pending_settlements = settlements_qs.filter(status='PENDING').aggregate(total=Sum('seller_amount'))['total'] or 0
-        paid_settlements = settlements_qs.filter(status='PAID').aggregate(total=Sum('seller_amount'))['total'] or 0
+        pending_settlements = settlements_qs.filter(status='PENDING').aggregate(
+            total=Sum('seller_amount'))['total'] or 0
+        paid_settlements = settlements_qs.filter(status='PAID').aggregate(
+            total=Sum('seller_amount'))['total'] or 0
 
         # Recent orders list directly from Order table
         recent_list = []
@@ -3579,9 +3699,12 @@ class ProcessOrderRefundView(APIView):
         if order.payment_method == 'RAZORPAY':
             import os
             import razorpay
-            RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
-            RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
-            client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+            RAZORPAY_KEY_ID = os.getenv(
+                "RAZORPAY_KEY_ID", "rzp_test_61r9Oaexv2tXjZ")
+            RAZORPAY_KEY_SECRET = os.getenv(
+                "RAZORPAY_KEY_SECRET", "S7tK7rX35JqZJ35pL2O2x7w8")
+            client = razorpay.Client(
+                auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
             try:
                 if order.razorpay_payment_id:
@@ -3606,5 +3729,3 @@ class ProcessOrderRefundView(APIView):
             'order_status': order.order_status,
             'reason': reason
         })
-
-

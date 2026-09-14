@@ -1,3 +1,10 @@
+from .tasks import publish_scheduled_post_task
+from .models import ScheduledPost
+from django.db.models import Q
+from django.db import models
+from django.utils import timezone
+from rest_framework.decorators import action
+from rest_framework import serializers, viewsets, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -22,7 +29,8 @@ def find_button_title_in_node_data(data, target_payload):
     btns_json = data.get('button_template_buttons_json')
     if btns_json:
         try:
-            btns = json.loads(btns_json) if isinstance(btns_json, str) else btns_json
+            btns = json.loads(btns_json) if isinstance(
+                btns_json, str) else btns_json
             if isinstance(btns, list):
                 for b in btns:
                     if isinstance(b, dict) and b.get('payload') == target_payload:
@@ -51,7 +59,8 @@ def find_button_title_in_node_data(data, target_payload):
     elems_json = data.get('generic_template_elements_json')
     if elems_json:
         try:
-            elems = json.loads(elems_json) if isinstance(elems_json, str) else elems_json
+            elems = json.loads(elems_json) if isinstance(
+                elems_json, str) else elems_json
             if isinstance(elems, list):
                 for el in elems:
                     for b in el.get('buttons', []):
@@ -121,7 +130,8 @@ def build_visual_data_from_rule(rule):
             modified = False
 
             # Clean up any stray parent_event on root action nodes
-            action_node_ids = {n.get('id') for n in nodes if n.get('type') == 'action'}
+            action_node_ids = {n.get('id')
+                               for n in nodes if n.get('type') == 'action'}
             child_node_ids = set()
             for e in edges:
                 src = e.get('source')
@@ -140,7 +150,8 @@ def build_visual_data_from_rule(rule):
 
             for node in nodes:
                 n_id = node.get('id')
-                n_data = node.get('data', {}) if isinstance(node.get('data'), dict) else {}
+                n_data = node.get('data', {}) if isinstance(
+                    node.get('data'), dict) else {}
                 parent_event = n_data.get('parent_event')
                 dm_format = n_data.get('dm_format')
                 loop_target_id = n_data.get('loop_target_id')
@@ -149,15 +160,18 @@ def build_visual_data_from_rule(rule):
                 if parent_event:
                     has_forward_edge = any(
                         e.get('target') == n_id and not (
-                            'loop' in str(e.get('id', '')).lower() or 'loop' in str(e.get('label', '')).lower()
+                            'loop' in str(e.get('id', '')).lower() or 'loop' in str(
+                                e.get('label', '')).lower()
                         )
                         for e in edges
                     )
                     if not has_forward_edge:
                         for pnode in nodes:
                             p_id = pnode.get('id')
-                            p_data = pnode.get('data', {}) if isinstance(pnode.get('data'), dict) else {}
-                            btn_title = find_button_title_in_node_data(p_data, parent_event)
+                            p_data = pnode.get('data', {}) if isinstance(
+                                pnode.get('data'), dict) else {}
+                            btn_title = find_button_title_in_node_data(
+                                p_data, parent_event)
                             if btn_title:
                                 edges.append({
                                     "id": f"edge-reply-{p_id}-{n_id}",
@@ -172,7 +186,8 @@ def build_visual_data_from_rule(rule):
                 if dm_format == 'loop_back' and loop_target_id:
                     has_loop_edge = any(
                         e.get('source') == n_id and e.get('target') == loop_target_id and (
-                            'loop' in str(e.get('id', '')).lower() or 'loop' in str(e.get('label', '')).lower()
+                            'loop' in str(e.get('id', '')).lower() or 'loop' in str(
+                                e.get('label', '')).lower()
                         )
                         for e in edges
                     )
@@ -202,7 +217,8 @@ def build_visual_data_from_rule(rule):
     rule_type = rule.rule_type or 'comment_automation'
     target_mode = rule.target_mode or 'selected'
     target_media_ids = rule.target_media_ids or []
-    target_media_type = rule.target_media_type or ('reel' if rule_type == 'reel_automation' else ('story' if rule_type == 'story_automation' else 'post'))
+    target_media_type = rule.target_media_type or ('reel' if rule_type == 'reel_automation' else (
+        'story' if rule_type == 'story_automation' else 'post'))
 
     # 1. Trigger Node
     t_id = f"node-t-{rule.id}"
@@ -278,7 +294,8 @@ def build_visual_data_from_rule(rule):
             a_id = f"node-a-{rule.id}-{action.id or i}"
             pos_y = 80 + (i * 320)
             is_primary = action.action_type == 'send_dm'
-            act_label = "DIRECT MESSAGE" if action.action_type == 'send_dm' else ("PUBLIC REPLY" if action.action_type == 'reply_comment' else "ACTION")
+            act_label = "DIRECT MESSAGE" if action.action_type == 'send_dm' else (
+                "PUBLIC REPLY" if action.action_type == 'reply_comment' else "ACTION")
 
             act_data = {
                 "action_type": action.action_type,
@@ -292,11 +309,14 @@ def build_visual_data_from_rule(rule):
             }
 
             if action.generic_template_payload and action.generic_template_payload.get('elements'):
-                act_data["generic_template_elements_json"] = json.dumps(action.generic_template_payload.get('elements', []))
+                act_data["generic_template_elements_json"] = json.dumps(
+                    action.generic_template_payload.get('elements', []))
             if action.button_template_payload and action.button_template_payload.get('buttons'):
-                act_data["button_template_buttons_json"] = json.dumps(action.button_template_payload.get('buttons', []))
+                act_data["button_template_buttons_json"] = json.dumps(
+                    action.button_template_payload.get('buttons', []))
             if action.quick_reply_payload and action.quick_reply_payload.get('quick_replies'):
-                act_data["quick_replies_titles"] = [qr.get('title') for qr in action.quick_reply_payload.get('quick_replies', []) if qr.get('title')]
+                act_data["quick_replies_titles"] = [qr.get(
+                    'title') for qr in action.quick_reply_payload.get('quick_replies', []) if qr.get('title')]
             if action.show_profile_payload:
                 act_data.update(action.show_profile_payload)
             if action.check_follow_payload:
@@ -318,7 +338,8 @@ def build_visual_data_from_rule(rule):
                 # Find parent action
                 found_parent = False
                 for prev_id, prev_action in created_action_nodes[:-1]:
-                    btn_title = find_button_title_in_action(prev_action, action.parent_event)
+                    btn_title = find_button_title_in_action(
+                        prev_action, action.parent_event)
                     if btn_title:
                         edges.append({
                             "id": f"edge-reply-{prev_id}-{a_id}",
@@ -399,7 +420,8 @@ class AutomationListCreateView(APIView):
             execution_count = AutomationExecution.objects.filter(
                 rule=rule, status='success').count()
 
-            followers_gained = AutomationFollowerGain.objects.filter(rule=rule).count()
+            followers_gained = AutomationFollowerGain.objects.filter(
+                rule=rule).count()
 
             data.append({
                 "id": str(rule.id),
@@ -435,7 +457,7 @@ class AutomationListCreateView(APIView):
                 user=user, is_active=True).first()
 
         if not account:
-            return Response({"error": "No active Instagram account found"}, status=400)
+            return Response({"error": "No active account. Connect an Instagram account."}, status=400)
 
         body = request.data
         rule_id = body.get("id")
@@ -490,9 +512,10 @@ class AutomationListCreateView(APIView):
                 rule.condition_keywords = c_data.get('keywords_equals', [])
             else:
                 rule.condition_keywords = c_data.get('keywords', [])
-            
+
             rule.follower_gate_enabled = c_data.get('follower_gate', False)
-            rule.follower_gate_messages = c_data.get('follower_gate_messages', [])
+            rule.follower_gate_messages = c_data.get(
+                'follower_gate_messages', [])
         else:
             # Default to match any if no condition node exists
             rule.condition_match_type = 'any'
@@ -520,7 +543,8 @@ class AutomationListCreateView(APIView):
                     child_node_ids.add(tgt)
 
         # Sort actions: Root actions first (order=0, 1...), then child actions by y-position
-        action_nodes.sort(key=lambda n: (1 if n.get('id') in child_node_ids else 0, n.get('position', {}).get('y', 0)))
+        action_nodes.sort(key=lambda n: (1 if n.get(
+            'id') in child_node_ids else 0, n.get('position', {}).get('y', 0)))
 
         for idx, node in enumerate(action_nodes):
             a_data = node.get('data', {})
@@ -823,18 +847,12 @@ def cron_trigger(request):
 # SCHEDULED POST VIEWSET & SERIALIZER
 # ─────────────────────────────────────────────────────────────────────────────
 
-from rest_framework import serializers, viewsets, status
-from rest_framework.decorators import action
-from django.utils import timezone
-from django.db import models
-from django.db.models import Q
-from .models import ScheduledPost
-from .tasks import publish_scheduled_post_task
-
 
 class ScheduledPostSerializer(serializers.ModelSerializer):
-    account_username = serializers.CharField(source='seller.username', read_only=True)
-    post_type_label = serializers.CharField(source='get_post_type_display', read_only=True)
+    account_username = serializers.CharField(
+        source='seller.username', read_only=True)
+    post_type_label = serializers.CharField(
+        source='get_post_type_display', read_only=True)
 
     class Meta:
         model = ScheduledPost
@@ -864,7 +882,7 @@ class ScheduledPostViewSet(viewsets.ModelViewSet):
         queryset = ScheduledPost.objects.filter(
             models.Q(user=user) | models.Q(seller__user=user)
         )
-        
+
         # Filter by status if query param provided
         status_param = self.request.query_params.get('status')
         if status_param and status_param != 'ALL':
@@ -879,9 +897,11 @@ class ScheduledPostViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        active_ig = getattr(user, 'active_instagram_account', None) or user.instagram_accounts.filter(is_active=True).first()
+        active_ig = getattr(user, 'active_instagram_account',
+                            None) or user.instagram_accounts.filter(is_active=True).first()
         if not active_ig:
-            raise serializers.ValidationError({"error": "No connected Instagram account found. Please connect an account first."})
+            raise serializers.ValidationError(
+                {"error": "No active account. Connect an Instagram account."})
 
         publish_now = self.request.data.get('publish_now', False)
         scheduled_at = serializer.validated_data.get('scheduled_at')
@@ -906,7 +926,8 @@ class ScheduledPostViewSet(viewsets.ModelViewSet):
             )
             # If celery supports ETA, queue it; otherwise periodic worker handles it
             try:
-                publish_scheduled_post_task.apply_async(args=[post.id], eta=post.scheduled_at)
+                publish_scheduled_post_task.apply_async(
+                    args=[post.id], eta=post.scheduled_at)
             except Exception:
                 pass
 
@@ -935,9 +956,11 @@ class ScheduledPostViewSet(viewsets.ModelViewSet):
                     "post_id": post_id
                 }
                 if user_id:
-                    async_to_sync(cl.group_send)(f"user_{user_id}", {"type": "chat_message", "payload": payload})
+                    async_to_sync(cl.group_send)(f"user_{user_id}", {
+                        "type": "chat_message", "payload": payload})
                 if seller_id:
-                    async_to_sync(cl.group_send)(f"instagram_{seller_id}", {"type": "chat_message", "payload": payload})
+                    async_to_sync(cl.group_send)(f"instagram_{seller_id}", {
+                        "type": "chat_message", "payload": payload})
         except Exception:
             pass
 
@@ -966,4 +989,3 @@ class ScheduledPostViewSet(viewsets.ModelViewSet):
             "message": "Publish triggered successfully",
             "post": serializer.data
         }, status=status.HTTP_200_OK)
-

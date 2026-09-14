@@ -5,6 +5,7 @@ from django.conf import settings
 class User(AbstractUser):
     firebase_uid = models.CharField(max_length=255, unique=True, null=True, blank=True)
     login_methods = models.JSONField(default=list)  # e.g., ["google", "email", "instagram"]
+    photo_url = models.CharField(max_length=1024, null=True, blank=True)
     
     # The active account working context
     active_instagram_account = models.ForeignKey(
@@ -350,6 +351,18 @@ class LinkInBioPage(models.Model):
 
     def __str__(self):
         return f"Link-in-Bio @{self.username}"
+
+
+class LinkInBioUsernameHistory(models.Model):
+    page = models.ForeignKey(LinkInBioPage, on_delete=models.CASCADE, related_name='username_history')
+    old_username = models.CharField(max_length=100, db_index=True)
+    deactivated_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-deactivated_at']
+
+    def __str__(self):
+        return f"History @{self.old_username} -> Page @{self.page.username}"
 
 
 class LinkInBioBlock(models.Model):

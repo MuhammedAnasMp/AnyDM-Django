@@ -648,14 +648,28 @@ class UpdateProfileView(APIView):
         if not request.user.is_authenticated:
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
 
+        user = request.user
+        updated = False
+
         display_name = request.data.get('display_name')
         if display_name is not None:
-            user = request.user
             user.first_name = display_name
-            user.save()
-            return Response({'message': 'Profile updated successfully', 'display_name': user.first_name})
+            updated = True
 
-        return Response({'error': 'display_name is required'}, status=status.HTTP_400_BAD_REQUEST)
+        photo_url = request.data.get('photo_url')
+        if photo_url is not None:
+            setattr(user, 'photo_url', photo_url)
+            updated = True
+
+        if updated:
+            user.save()
+            return Response({
+                'message': 'Profile updated successfully',
+                'display_name': user.first_name,
+                'photo_url': getattr(user, 'photo_url', None) or photo_url
+            })
+
+        return Response({'error': 'No profile fields provided to update'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class RemoveInstagramAccountView(APIView):
@@ -764,7 +778,7 @@ class InstagramStoriesView(APIView):
         user = request.user
         active_account = user.active_instagram_account
         if not active_account:
-            return Response({'error': 'No active Instagram account connected'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Please connect at least one Instagram account to continue.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if not active_account.access_token:
             return Response({'error': 'Instagram account access token is missing'}, status=status.HTTP_400_BAD_REQUEST)
@@ -812,7 +826,7 @@ class InstagramMediaListView(APIView):
         user = request.user
         active_account = user.active_instagram_account
         if not active_account:
-            return Response({'error': 'No active Instagram account connected'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Please connect at least one Instagram account to continue.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if not active_account.access_token:
             return Response({'error': 'Instagram account access token is missing'}, status=status.HTTP_400_BAD_REQUEST)
@@ -888,7 +902,7 @@ class WebsiteSettingsView(APIView):
             active_account = user.instagram_accounts.filter(
                 is_active=True).first()
             if not active_account:
-                return Response({'error': 'No active Instagram account connected.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'Please connect at least one Instagram account to continue..'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Get or create website settings for this active account
         settings_obj, created = WebsiteSettings.objects.get_or_create(
@@ -939,7 +953,7 @@ class WebsiteSettingsView(APIView):
             active_account = user.instagram_accounts.filter(
                 is_active=True).first()
             if not active_account:
-                return Response({'error': 'No active Instagram account connected.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'Please connect at least one Instagram account to continue..'}, status=status.HTTP_400_BAD_REQUEST)
 
         settings_obj, created = WebsiteSettings.objects.get_or_create(
             instagram_account=active_account,
@@ -1257,6 +1271,7 @@ class SyncCloudflareCustomDomainView(APIView):
 
 
 class PublicStorefrontView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def get(self, request, username):
@@ -1529,6 +1544,7 @@ def serialize_user_payload(user):
         'email': user.email,
         'login_methods': user.login_methods if isinstance(user.login_methods, list) else [],
         'display_name': user.first_name or user.username,
+        'photo_url': getattr(user, 'photo_url', None),
         'active_instagram_account_id': user.active_instagram_account_id,
         'plan': user.plan,
         'points': user.points,
@@ -2834,6 +2850,17 @@ def extract_reel_code(url: str) -> str:
     return ""
 
 
+def cleanup_expired_username_history():
+    """
+    Purges any username history records older than 60 days (2 months).
+    """
+    from django.utils import timezone
+    import datetime
+    from .models import LinkInBioUsernameHistory
+    cutoff = timezone.now() - datetime.timedelta(days=60)
+    LinkInBioUsernameHistory.objects.filter(deactivated_at__lt=cutoff).delete()
+
+
 def get_or_create_link_in_bio_page(user, active_account=None):
     """
     Gets or creates a LinkInBioPage for a user / active Instagram account.
@@ -3051,8 +3078,20 @@ class LinkInBioSettingsView(APIView):
             if not new_username or len(new_username) < 2:
                 return Response({'error': 'Username must be at least 2 characters.'}, status=status.HTTP_400_BAD_REQUEST)
             if new_username != page.username:
+                cleanup_expired_username_history()
+                from django.utils import timezone
+                import datetime
+                from .models import LinkInBioUsernameHistory
+
+                cutoff = timezone.now() - datetime.timedelta(days=60)
                 if LinkInBioPage.objects.filter(username__iexact=new_username).exclude(id=page.id).exists():
                     return Response({'error': f'@{new_username} is already taken. Please choose another username.'}, status=status.HTTP_400_BAD_REQUEST)
+                if LinkInBioUsernameHistory.objects.filter(old_username__iexact=new_username, deactivated_at__gte=cutoff).exclude(page=page).exists():
+                    return Response({'error': f'@{new_username} is reserved from a recent name change. Please choose another username.'}, status=status.HTTP_400_BAD_REQUEST)
+
+                old_uname = page.username
+                LinkInBioUsernameHistory.objects.create(page=page, old_username=old_uname)
+                LinkInBioUsernameHistory.objects.filter(page=page, old_username__iexact=new_username).delete()
                 page.username = new_username
 
         page.save()
@@ -3243,15 +3282,28 @@ class LinkInBioUsernameCheckView(APIView):
         user_page = LinkInBioPage.objects.filter(user=request.user).first()
         current_page_id = user_page.id if user_page else None
 
-        exists = LinkInBioPage.objects.filter(username__iexact=clean_user).exclude(id=current_page_id).exists()
+        cleanup_expired_username_history()
+        from django.utils import timezone
+        import datetime
+        from .models import LinkInBioUsernameHistory
+
+        cutoff = timezone.now() - datetime.timedelta(days=60)
+        exists_in_pages = LinkInBioPage.objects.filter(username__iexact=clean_user).exclude(id=current_page_id).exists()
+        exists_in_history = LinkInBioUsernameHistory.objects.filter(
+            old_username__iexact=clean_user,
+            deactivated_at__gte=cutoff
+        ).exclude(page_id=current_page_id).exists()
+
+        exists = exists_in_pages or exists_in_history
         return Response({
             'available': not exists,
             'username': clean_user,
-            'reason': 'Username already taken' if exists else 'Username is available'
+            'reason': 'Username is reserved or taken' if exists else 'Username is available'
         }, status=status.HTTP_200_OK)
 
 
 class PublicLinkInBioView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def get(self, request, username):
@@ -3262,6 +3314,18 @@ class PublicLinkInBioView(APIView):
             page = LinkInBioPage.objects.filter(instagram_account__username__iexact=clean_username).first()
         if not page:
             page = LinkInBioPage.objects.filter(user__username__iexact=clean_username).first()
+        if not page:
+            cleanup_expired_username_history()
+            from django.utils import timezone
+            import datetime
+            from .models import LinkInBioUsernameHistory
+            cutoff = timezone.now() - datetime.timedelta(days=60)
+            history_item = LinkInBioUsernameHistory.objects.filter(
+                old_username__iexact=clean_username,
+                deactivated_at__gte=cutoff
+            ).first()
+            if history_item:
+                page = history_item.page
 
         if not page:
             return Response({'error': f'No Link-in-Bio page found for @{clean_username}'}, status=status.HTTP_404_NOT_FOUND)
@@ -3289,7 +3353,8 @@ class PublicLinkInBioView(APIView):
         return Response({
             'page': serialize_page(page),
             'blocks': active_blocks,
-            'creator': creator_info
+            'creator': creator_info,
+            'redirected_from': clean_username if clean_username != page.username.lower() else None
         }, status=status.HTTP_200_OK)
 
 
@@ -3301,6 +3366,18 @@ class PublicLinkInBioResolveRedirectView(APIView):
         page = LinkInBioPage.objects.filter(username__iexact=clean_username).first()
         if not page:
             page = LinkInBioPage.objects.filter(instagram_account__username__iexact=clean_username).first()
+        if not page:
+            cleanup_expired_username_history()
+            from django.utils import timezone
+            import datetime
+            from .models import LinkInBioUsernameHistory
+            cutoff = timezone.now() - datetime.timedelta(days=60)
+            history_item = LinkInBioUsernameHistory.objects.filter(
+                old_username__iexact=clean_username,
+                deactivated_at__gte=cutoff
+            ).first()
+            if history_item:
+                page = history_item.page
         if not page:
             return Response({'found': False, 'message': f'Page @{clean_username} not found.'}, status=status.HTTP_404_NOT_FOUND)
 
