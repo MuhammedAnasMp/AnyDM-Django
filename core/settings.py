@@ -218,13 +218,16 @@ STATIC_URL = "/static/"
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 WHITENOISE_USE_FINDERS = True
 
+SHOW_DETAILED_ERRORS = os.getenv("SHOW_DETAILED_ERRORS", "True") == "True"
+
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'apps.accounts.authentication.CustomJWTAuthentication',
-    )
+    ),
+    'EXCEPTION_HANDLER': 'core.exceptions.custom_exception_handler',
 }
 
 SIMPLE_JWT = {
