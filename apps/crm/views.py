@@ -1872,7 +1872,7 @@ class AIAssistantConfigView(APIView):
             "business_name": config.business_name,
             "business_location": config.business_location,
             "working_hours": config.working_hours,
-            "delivery_time": config.delivery_time,
+            "delivery_time": str(config.delivery_time) if config.delivery_time else "",
             "contact_details": config.contact_details,
             "faqs": config.faqs,
             "products_and_services": config.products_and_services,

@@ -3035,6 +3035,10 @@ def get_or_create_link_in_bio_page(user, active_account=None):
 
 
 def serialize_block(block: LinkInBioBlock) -> dict:
+    try:
+        clicks = int(block.clicks_count) if block.clicks_count is not None else 0
+    except (ValueError, TypeError):
+        clicks = 0
     return {
         'id': block.id,
         'block_type': block.block_type,
@@ -3045,13 +3049,17 @@ def serialize_block(block: LinkInBioBlock) -> dict:
         'config': block.config or {},
         'order': block.order,
         'is_active': block.is_active,
-        'clicks_count': block.clicks_count,
-        'created_at': block.created_at.isoformat(),
-        'updated_at': block.updated_at.isoformat(),
+        'clicks_count': clicks,
+        'created_at': block.created_at.isoformat() if hasattr(block.created_at, 'isoformat') else str(block.created_at),
+        'updated_at': block.updated_at.isoformat() if hasattr(block.updated_at, 'isoformat') else str(block.updated_at),
     }
 
 
 def serialize_redirect_rule(rule: LinkInBioRedirectRule) -> dict:
+    try:
+        hits = int(rule.hits_count) if rule.hits_count is not None else 0
+    except (ValueError, TypeError):
+        hits = 0
     return {
         'id': rule.id,
         'title': rule.title,
@@ -3061,14 +3069,22 @@ def serialize_redirect_rule(rule: LinkInBioRedirectRule) -> dict:
         'destination_value': rule.destination_value,
         'destination_title': rule.destination_title,
         'is_active': rule.is_active,
-        'hits_count': rule.hits_count,
-        'created_at': rule.created_at.isoformat(),
-        'updated_at': rule.updated_at.isoformat(),
+        'hits_count': hits,
+        'created_at': rule.created_at.isoformat() if hasattr(rule.created_at, 'isoformat') else str(rule.created_at),
+        'updated_at': rule.updated_at.isoformat() if hasattr(rule.updated_at, 'isoformat') else str(rule.updated_at),
     }
 
 
 def serialize_page(page: LinkInBioPage) -> dict:
     c_theme = page.custom_theme or {}
+    try:
+        views = int(page.views_count) if page.views_count is not None else 0
+    except (ValueError, TypeError):
+        views = 0
+    try:
+        clicks = int(page.clicks_count) if page.clicks_count is not None else 0
+    except (ValueError, TypeError):
+        clicks = 0
     return {
         'id': page.id,
         'username': page.username,
@@ -3089,10 +3105,10 @@ def serialize_page(page: LinkInBioPage) -> dict:
         'smart_input_button_text': page.smart_input_button_text,
         'smart_input_title': page.smart_input_title,
         'is_published': page.is_published,
-        'views_count': page.views_count,
-        'clicks_count': page.clicks_count,
-        'created_at': page.created_at.isoformat(),
-        'updated_at': page.updated_at.isoformat(),
+        'views_count': views,
+        'clicks_count': clicks,
+        'created_at': page.created_at.isoformat() if hasattr(page.created_at, 'isoformat') else str(page.created_at),
+        'updated_at': page.updated_at.isoformat() if hasattr(page.updated_at, 'isoformat') else str(page.updated_at),
     }
 
 
@@ -3105,7 +3121,7 @@ class LinkInBioSettingsView(APIView):
         blocks = [serialize_block(b) for b in page.blocks.all().order_by('order', 'created_at')]
         redirect_rules = [serialize_redirect_rule(r) for r in page.redirect_rules.all()]
 
-        total_redirect_hits = sum(r['hits_count'] for r in redirect_rules)
+        total_redirect_hits = sum(int(r.get('hits_count', 0) or 0) for r in redirect_rules)
 
         return Response({
             'page': serialize_page(page),
