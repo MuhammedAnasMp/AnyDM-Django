@@ -2741,13 +2741,22 @@ class OrderTrackingView(APIView):
         return_deduction = order.return_deduction_charge or Decimal('0.00')
         estimated_refund = max(Decimal('0.00'), order.total_amount - return_deduction)
 
+        first_item = order.items.first()
+        prod_name = first_item.product.title if first_item and first_item.product else "Store Item Purchase"
+
         return Response({
             'order_id': order.order_id,
             'store_username': order.instagram_account.username,
+            'store_name': store_settings.store_name or order.instagram_account.full_name or order.instagram_account.username,
+            'store_logo': store_settings.store_logo,
+            'template_id': store_settings.template_id or 'glass_monochrome',
+            'theme_id': store_settings.theme_id or 'default',
+            'custom_settings': store_settings.custom_settings or {},
             'customer_name': order.customer_name,
             'payment_method': order.payment_method,
             'order_status': order.order_status,
             'total_amount': str(order.total_amount),
+            'product_name': prod_name,
             'shipping_charge': str(order.shipping_charge),
             'return_deduction_charge': str(return_deduction),
             'estimated_refund_amount': str(estimated_refund),
@@ -3857,16 +3866,60 @@ class ResolveCustomerSessionView(APIView):
 
         from django.utils import timezone
         session.last_active_at = timezone.now()
-        session.save(update_fields=['last_active_at'])
 
+        # Cloudinary profile picture caching
+        if session.instagram_profile_pic and "res.cloudinary.com" not in session.instagram_profile_pic:
+            try:
+                import os
+                import cloudinary
+                import cloudinary.uploader
+                cloud_name = getattr(settings, 'CLOUDINARY_CLOUD_NAME', os.environ.get('CLOUDINARY_CLOUD_NAME', 'dx5bqewfx'))
+                api_key = getattr(settings, 'CLOUDINARY_API_KEY', os.environ.get('CLOUDINARY_API_KEY', '796338574163914'))
+                api_secret = getattr(settings, 'CLOUDINARY_API_SECRET', os.environ.get('CLOUDINARY_API_SECRET', 'y5B81WdZ3j3E8kX_8SgV9_yN44s'))
+                cloudinary.config(
+                    cloud_name=cloud_name,
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    secure=True
+                )
+                cld_res = cloudinary.uploader.upload(session.instagram_profile_pic, folder="customer_avatars")
+                if cld_res.get("secure_url"):
+                    session.instagram_profile_pic = cld_res.get("secure_url")
+                    if session.customer:
+                        session.customer.profile_pic = session.instagram_profile_pic
+                        session.customer.save(update_fields=['profile_pic'])
+            except Exception as cld_err:
+                print(f"[Cloudinary Avatar Upload Warning] {cld_err}")
+
+        session.save(update_fields=['last_active_at', 'instagram_profile_pic'])
+
+        from django.db.models import Q
+        query_conditions = Q(customer_session_token=token)
+        if session.instagram_username:
+            query_conditions |= Q(instagram_username__iexact=session.instagram_username)
+        if session.instagram_scoped_id:
+            query_conditions |= Q(instagram_scoped_id=session.instagram_scoped_id)
+        if session.saved_customer_phone:
+            query_conditions |= Q(customer_phone=session.saved_customer_phone)
+        if session.saved_customer_email:
+            query_conditions |= Q(customer_email__iexact=session.saved_customer_email)
+
+        orders_qs = Order.objects.filter(query_conditions).distinct().order_by('-created_at')
         orders_data = []
-        orders_qs = Order.objects.filter(customer_session_token=token).order_by('-created_at')
         for o in orders_qs:
+            first_item = o.items.first()
+            prod_name = first_item.product.title if first_item and first_item.product else "Order Item"
+            item_count = o.items.count()
+            if item_count > 1:
+                prod_name += f" (+{item_count - 1} more)"
             orders_data.append({
                 'order_id': o.order_id,
                 'order_status': o.order_status,
                 'total_amount': str(o.total_amount),
-                'created_at': o.created_at
+                'product_name': prod_name,
+                'payment_method': o.payment_method,
+                'payment_status': o.payment_status,
+                'created_at': o.created_at.isoformat() if o.created_at else None
             })
 
         return Response({
