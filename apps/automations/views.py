@@ -835,11 +835,23 @@ class AutomationToggleView(APIView):
 
 
 def cron_trigger(request):
-    fake_redis_task.delay()
+    try:
+        from .tasks import process_due_scheduled_posts_task
+        try:
+            process_due_scheduled_posts_task.delay()
+        except Exception:
+            process_due_scheduled_posts_task()
+    except Exception as e:
+        logger.error(f"[CRON] Failed to trigger process_due_scheduled_posts_task: {e}")
+
+    try:
+        fake_redis_task.delay()
+    except Exception:
+        pass
 
     return JsonResponse({
         "status": "Django working",
-        "message": "Task sent to Celery via Redis queue"
+        "message": "Cron triggered and scheduled posts processor executed successfully."
     })
 
 

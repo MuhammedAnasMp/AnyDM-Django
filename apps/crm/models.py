@@ -51,6 +51,43 @@ class Customer(models.Model):
     def __str__(self):
         return self.username or self.full_name or self.instagram_scoped_id
 
+
+class CustomerSession(models.Model):
+    token = models.CharField(max_length=255, unique=True, db_index=True)
+    customer = models.ForeignKey(
+        'Customer',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sessions"
+    )
+    instagram_account = models.ForeignKey(
+        'accounts.InstagramAccount',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="customer_sessions"
+    )
+    instagram_username = models.CharField(max_length=255, blank=True, null=True)
+    instagram_scoped_id = models.CharField(max_length=255, blank=True, null=True)
+    instagram_profile_pic = models.URLField(max_length=1000, blank=True, null=True)
+
+    saved_customer_name = models.CharField(max_length=255, blank=True, null=True)
+    saved_customer_email = models.CharField(max_length=255, blank=True, null=True)
+    saved_customer_phone = models.CharField(max_length=50, blank=True, null=True)
+    saved_shipping_address = models.TextField(blank=True, null=True)
+    saved_shipping_pincode = models.CharField(max_length=20, blank=True, null=True)
+    saved_shipping_place = models.CharField(max_length=255, blank=True, null=True)
+    saved_shipping_district = models.CharField(max_length=255, blank=True, null=True)
+    saved_shipping_state = models.CharField(max_length=255, blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_active_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"CustomerSession {self.token[:12]} - IG: {self.instagram_username or 'Guest'}"
+
 class CustomerInteraction(models.Model):
 
     customer = models.ForeignKey(
@@ -315,7 +352,13 @@ class Order(models.Model):
     order_status = models.CharField(max_length=50, choices=ORDER_STATUS_CHOICES, default='PENDING_PAYMENT')
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     shipping_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    return_deduction_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     tracking_token = models.CharField(max_length=255, blank=True, null=True)
+
+    customer_session_token = models.CharField(max_length=255, blank=True, null=True)
+    instagram_username = models.CharField(max_length=255, blank=True, null=True)
+    instagram_scoped_id = models.CharField(max_length=255, blank=True, null=True)
+    instagram_profile_pic = models.URLField(max_length=1000, blank=True, null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -346,17 +389,43 @@ class Settlement(models.Model):
         ('PENDING', 'Pending Payment'),
         ('PAID', 'Admin Paid Seller'),
         ('COMPLETED', 'Completed'),
+        ('FAILED', 'Payout Failed'),
     ]
+    SETTLEMENT_TYPE_CHOICES = [
+        ('PRODUCT_ORDER', 'Product Order'),
+        ('CREATOR_COMMISSION', 'Creator Affiliate Commission'),
+    ]
+    TRANSFER_MODE_CHOICES = [
+        ('MANUAL', 'Manual Bank/UPI Transfer'),
+        ('RAZORPAY_ROUTE', 'Razorpay Route (Automated)'),
+        ('RAZORPAY_PAYOUT', 'Razorpay Payouts API'),
+    ]
+
+    PAYOUT_MODE_CHOICES = [
+        ('INSTANT', 'Instant Payout'),
+        ('MONTHLY', 'Monthly Held'),
+    ]
+
+    settlement_type = models.CharField(max_length=30, choices=SETTLEMENT_TYPE_CHOICES, default='PRODUCT_ORDER')
+    payout_mode = models.CharField(max_length=20, choices=PAYOUT_MODE_CHOICES, default='INSTANT')
     seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='settlements')
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='settlements')
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='settlements', null=True, blank=True)
+    creator_commission = models.ForeignKey('accounts.CreatorCommission', on_delete=models.SET_NULL, null=True, blank=True, related_name='settlements')
+
     order_amount = models.DecimalField(max_digits=10, decimal_places=2)
-    commission = models.DecimalField(max_digits=10, decimal_places=2)
+    commission = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     razorpay_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     seller_amount = models.DecimalField(max_digits=10, decimal_places=2)
+
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    transfer_mode = models.CharField(max_length=30, choices=TRANSFER_MODE_CHOICES, default='MANUAL')
+    transfer_id = models.CharField(max_length=255, blank=True, null=True)
+    utr_number = models.CharField(max_length=255, blank=True, null=True)
     payment_proof = models.URLField(max_length=2000, blank=True, null=True)
+    failure_reason = models.TextField(blank=True, null=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     paid_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
-        return f"Settlement {self.id} for {self.seller.username} - {self.status}"
+        return f"Settlement {self.id} [{self.settlement_type}] for {self.seller.username} - {self.status}"

@@ -1649,6 +1649,16 @@ class CustomerListView(APIView):
                 is_within_24h_window = seconds_remaining_24h > 0
                 is_within_23h_window = seconds_remaining_23h > 0
 
+            # Compute dynamic lead score based on real user activity & profile metrics
+            computed_lead_score = customer.lead_score
+            if computed_lead_score <= 0:
+                base_score = 15
+                interactions_score = min(40, (customer.total_interactions or 0) * 10)
+                enquiries_score = min(30, (customer.total_enquiries or 0) * 15)
+                following_score = 15 if customer.is_following_business else 0
+                window_score = 15 if is_within_24h_window else 0
+                computed_lead_score = min(100, base_score + interactions_score + enquiries_score + following_score + window_score)
+
             fg = customer.follower_gains.first() if hasattr(
                 customer, 'follower_gains') else None
 
@@ -1660,7 +1670,7 @@ class CustomerListView(APIView):
                 "profile_pic": customer.profile_pic,
                 "total_interactions": customer.total_interactions,
                 "total_enquiries": customer.total_enquiries,
-                "lead_score": customer.lead_score,
+                "lead_score": computed_lead_score,
                 "last_interaction_at": customer.last_interaction_at.isoformat() if customer.last_interaction_at else None,
                 "is_following_business": customer.is_following_business,
                 "is_business_follow_user": customer.is_business_follow_user,
@@ -2032,6 +2042,7 @@ class SellerKYCView(APIView):
             'bank_name': kyc.bank_name,
             'bank_account_number': kyc.bank_account_number,
             'bank_ifsc': kyc.bank_ifsc,
+            'upi_id': kyc.upi_id,
             'status': kyc.status,
             'is_card_verified': kyc.is_card_verified,
             'razorpay_account_id': kyc.razorpay_account_id,
@@ -2048,6 +2059,7 @@ class SellerKYCView(APIView):
         bank_account_number = request.data.get(
             'bank_account_number', '').strip()
         bank_ifsc = request.data.get('bank_ifsc', '').strip().upper()
+        upi_id = request.data.get('upi_id', '').strip()
         custom_rzp_account = request.data.get(
             'razorpay_account_id', '').strip()
 
@@ -2080,6 +2092,8 @@ class SellerKYCView(APIView):
         kyc.bank_name = bank_name
         kyc.bank_account_number = bank_account_number
         kyc.bank_ifsc = bank_ifsc
+        if upi_id:
+            kyc.upi_id = upi_id
         if custom_rzp_account:
             kyc.razorpay_account_id = custom_rzp_account
 
@@ -2339,6 +2353,7 @@ class CheckoutView(APIView):
         shipping_district = data.get('shipping_district')
         shipping_state = data.get('shipping_state')
         payment_method = data.get('payment_method', 'COD').upper()
+        customer_session_token = data.get('customer_session_token')
 
         if not username or not items:
             return Response({'error': 'Store username and items are required.'}, status=400)
@@ -2418,10 +2433,18 @@ class CheckoutView(APIView):
         # Total amount including shipping
         total_amount += shipping_charge
 
+        from decimal import Decimal
+        total_return_deduction = sum(
+            [(prod.return_deduction_charge or Decimal('0.00')) * qty for prod, qty, variant in products_to_order]
+        )
+
         # Unique sequential-like order ID generation: AMD-YYYYMMDD-XXXXXX
         date_str = datetime.datetime.now().strftime("%Y%m%d")
         seq_num = random.randint(100000, 999999)
         order_id = f"AMD-{date_str}-{seq_num}"
+
+        from .models import CustomerSession
+        session = CustomerSession.objects.filter(token=customer_session_token).first() if customer_session_token else None
 
         # Create Order
         order = Order.objects.create(
@@ -2440,8 +2463,26 @@ class CheckoutView(APIView):
             payment_status='PENDING',
             order_status='PENDING_PAYMENT',
             total_amount=total_amount,
-            shipping_charge=shipping_charge
+            shipping_charge=shipping_charge,
+            return_deduction_charge=total_return_deduction,
+            customer_session_token=session.token if session else customer_session_token,
+            instagram_username=session.instagram_username if session else None,
+            instagram_scoped_id=session.instagram_scoped_id if session else None,
+            instagram_profile_pic=session.instagram_profile_pic if session else None
         )
+
+        if session:
+            from django.utils import timezone
+            session.saved_customer_name = customer_name
+            session.saved_customer_email = customer_email
+            session.saved_customer_phone = customer_phone
+            session.saved_shipping_address = shipping_address
+            session.saved_shipping_pincode = shipping_pincode
+            session.saved_shipping_place = shipping_place
+            session.saved_shipping_district = shipping_district
+            session.saved_shipping_state = shipping_state
+            session.last_active_at = timezone.now()
+            session.save()
 
         # Create items and update stock
         for prod, qty, variant in products_to_order:
@@ -2481,15 +2522,24 @@ class CheckoutView(APIView):
                 razorpay_fee = (price * qty) * Decimal('0.02')
                 seller_amount = (price * qty) - commission - razorpay_fee
 
-                Settlement.objects.create(
+                payout_mode_val = 'INSTANT' if is_instant_payout else 'MONTHLY'
+
+                new_settlement = Settlement.objects.create(
                     seller=account.user,
                     order=order,
+                    settlement_type='PRODUCT_ORDER',
+                    payout_mode=payout_mode_val,
                     order_amount=price * qty,
                     commission=commission,
                     razorpay_fee=razorpay_fee,
                     seller_amount=seller_amount,
                     status='PENDING'
                 )
+                try:
+                    from apps.crm.services.payout_service import process_creator_payout
+                    process_creator_payout(new_settlement.id)
+                except Exception as p_err:
+                    pass
 
         # Initialize Razorpay Order if applicable
         razorpay_order_id = None
@@ -2684,8 +2734,12 @@ class OrderTrackingView(APIView):
 
         # Return policies
         from apps.accounts.models import WebsiteSettings
+        from decimal import Decimal
         store_settings, _ = WebsiteSettings.objects.get_or_create(
             instagram_account=order.instagram_account)
+
+        return_deduction = order.return_deduction_charge or Decimal('0.00')
+        estimated_refund = max(Decimal('0.00'), order.total_amount - return_deduction)
 
         return Response({
             'order_id': order.order_id,
@@ -2695,6 +2749,8 @@ class OrderTrackingView(APIView):
             'order_status': order.order_status,
             'total_amount': str(order.total_amount),
             'shipping_charge': str(order.shipping_charge),
+            'return_deduction_charge': str(return_deduction),
+            'estimated_refund_amount': str(estimated_refund),
             'created_at': order.created_at,
             'items': items_data,
             'return_policy': store_settings.return_policy,
@@ -2811,6 +2867,12 @@ class SellerOrdersView(APIView):
             total_razorpay_fee = sum(
                 [s.razorpay_fee for s in order_settlements])
 
+            first_settlement = order_settlements.first()
+            settlement_status = first_settlement.status if first_settlement else ('REFUNDED' if order.order_status in ['REFUNDED', 'CANCELLED'] else 'PENDING')
+            transfer_mode = first_settlement.transfer_mode if first_settlement else 'MANUAL'
+            utr_number = first_settlement.utr_number if first_settlement else None
+            payout_mode = first_settlement.payout_mode if first_settlement else 'INSTANT'
+
             orders_data.append({
                 'id': order.id,
                 'order_id': order.order_id,
@@ -2824,7 +2886,16 @@ class SellerOrdersView(APIView):
                 'payment_method': order.payment_method,
                 'payment_status': order.payment_status,
                 'order_status': order.order_status,
+                'settlement_status': settlement_status,
+                'settlement_transfer_mode': transfer_mode,
+                'settlement_utr_number': utr_number,
+                'payout_mode': payout_mode,
                 'total_amount': str(order.total_amount),
+                'return_deduction_charge': str(order.return_deduction_charge or 0),
+                'instagram_username': order.instagram_username,
+                'instagram_scoped_id': order.instagram_scoped_id,
+                'instagram_profile_pic': order.instagram_profile_pic,
+                'customer_session_token': order.customer_session_token,
                 'created_at': order.created_at,
                 'items': items_data,
                 'seller_payout_amount': str(total_seller_amount) if order_settlements.exists() else None,
@@ -2836,7 +2907,7 @@ class SellerOrdersView(APIView):
             if order.order_status in ['DELIVERED', 'COMPLETED']:
                 total_sales += float(order.total_amount)
                 completed_count += 1
-            elif order.order_status not in ['CANCELLED', 'PAYMENT_FAILED']:
+            elif order.order_status not in ['CANCELLED', 'REFUNDED', 'PAYMENT_FAILED']:
                 pending_count += 1
 
         # Low stock items (stock < 5)
@@ -2859,10 +2930,15 @@ class SellerOrdersView(APIView):
             settlements = Settlement.objects.filter(
                 seller=user, order__payment_method='RAZORPAY')
 
-        pending_settlement = sum([float(s.seller_amount)
-                                 for s in settlements if s.status == 'PENDING'])
-        total_earnings = sum([float(s.seller_amount)
-                             for s in settlements if s.status in ['PAID', 'COMPLETED']])
+        # Exclude REFUNDED or CANCELLED order settlements
+        pending_settlement = sum([
+            float(s.seller_amount) for s in settlements 
+            if s.status == 'PENDING' and s.order.order_status not in ['REFUNDED', 'CANCELLED']
+        ])
+        total_earnings = sum([
+            float(s.seller_amount) for s in settlements 
+            if s.status in ['PAID', 'COMPLETED'] and s.order.order_status not in ['REFUNDED', 'CANCELLED']
+        ])
 
         from apps.settings.models import SystemSettings
         sys_settings = SystemSettings.get_settings()
@@ -2877,6 +2953,7 @@ class SellerOrdersView(APIView):
             'payout_hold_mode': current_payout_mode,
             'instant_payout_commission_pct': instant_comm_pct,
             'global_commission_pct': global_comm_pct,
+            'enable_razorpay_route': sys_settings.enable_razorpay_route,
             'stats': {
                 'today_sales': str(total_sales),
                 'pending_orders': pending_count,
@@ -2973,29 +3050,33 @@ class SellerSettlementsView(APIView):
 
     def get(self, request):
         from .models import Settlement
+        from apps.accounts.models import SellerKYC
         from django.db.models import Q
         user = request.user
         account_id = request.query_params.get('account_id')
         status_param = request.query_params.get('status')
         search_param = request.query_params.get('search')
+        type_param = request.query_params.get('type')  # PRODUCT_ORDER or CREATOR_COMMISSION
 
-        # If user is admin/staff, return ALL settlements to process payouts
+        # Filter settlements
+        base_filter = Q(order__payment_method='RAZORPAY') | Q(settlement_type='CREATOR_COMMISSION') | Q(order__isnull=True)
         if user.is_superuser or user.is_staff:
-            settlements = Settlement.objects.filter(
-                order__payment_method='RAZORPAY').order_by('-created_at')
+            settlements = Settlement.objects.filter(base_filter).order_by('-created_at')
         else:
-            settlements = Settlement.objects.filter(
-                seller=user, order__payment_method='RAZORPAY').order_by('-created_at')
+            settlements = Settlement.objects.filter(base_filter, seller=user).order_by('-created_at')
 
         if account_id:
-            settlements = settlements.filter(
-                order__instagram_account_id=account_id)
+            settlements = settlements.filter(order__instagram_account_id=account_id)
+
+        if type_param and type_param != 'All':
+            settlements = settlements.filter(settlement_type=type_param)
 
         if search_param:
             q = search_param.strip()
             settlements = settlements.filter(
                 Q(order__order_id__icontains=q) |
                 Q(seller__username__icontains=q) |
+                Q(utr_number__icontains=q) |
                 Q(order__customer_name__icontains=q)
             )
 
@@ -3009,41 +3090,67 @@ class SellerSettlementsView(APIView):
 
         data = []
         for s in settlements:
+            kyc = SellerKYC.objects.filter(user=s.seller).first()
             data.append({
                 'id': s.id,
-                'order_id': s.order.order_id,
+                'settlement_type': s.settlement_type,
+                'order_id': s.order.order_id if s.order else f"COMM-{s.id}",
                 'seller_username': s.seller.username,
+                'seller_full_name': kyc.full_name if kyc and kyc.full_name else (s.seller.get_full_name() or s.seller.username),
+                'bank_name': kyc.bank_name if kyc else None,
+                'bank_account_number': kyc.bank_account_number if kyc else None,
+                'bank_ifsc': kyc.bank_ifsc if kyc else None,
+                'upi_id': kyc.upi_id if kyc else None,
+                'razorpay_account_id': kyc.razorpay_account_id if kyc else None,
                 'order_amount': str(s.order_amount),
                 'commission': str(s.commission),
                 'razorpay_fee': str(s.razorpay_fee),
                 'seller_amount': str(s.seller_amount),
                 'status': s.status,
+                'transfer_mode': s.transfer_mode,
+                'transfer_id': s.transfer_id,
+                'utr_number': s.utr_number,
                 'payment_proof': s.payment_proof,
+                'failure_reason': s.failure_reason,
                 'created_at': s.created_at,
                 'paid_at': s.paid_at
             })
         return Response(data)
 
     def post(self, request):
-        # Admin marking settlement as paid with proof
+        # Admin recording payout or triggering automated payout retry
         from .models import Settlement
         import django.utils.timezone as timezone
+        from apps.crm.services.payout_service import process_creator_payout
 
         if not (request.user.is_superuser or request.user.is_staff):
             return Response({'error': 'Only administrators can record settlements.'}, status=403)
 
         settlement_id = request.data.get('settlement_id')
-        payment_proof = request.data.get('payment_proof')
+        payment_proof = request.data.get('payment_proof', '')
+        utr_number = request.data.get('utr_number', '')
+        auto_transfer = request.data.get('auto_transfer', False)
 
         try:
             s = Settlement.objects.get(id=settlement_id)
         except Settlement.DoesNotExist:
             return Response({'error': 'Settlement record not found.'}, status=404)
 
+        if auto_transfer:
+            result = process_creator_payout(s.id)
+            return Response({'message': 'Automated payout attempted', 'result': result})
+
         s.status = 'PAID'
         s.payment_proof = payment_proof
+        if utr_number:
+            s.utr_number = utr_number
+        s.transfer_mode = 'MANUAL'
         s.paid_at = timezone.now()
         s.save()
+
+        if s.creator_commission:
+            s.creator_commission.status = 'paid'
+            s.creator_commission.save()
 
         return Response({'message': 'Settlement payout recorded successfully'})
 
@@ -3708,11 +3815,15 @@ class ProcessOrderRefundView(APIView):
 
             try:
                 if order.razorpay_payment_id:
-                    amount_in_paise = int(order.total_amount * 100)
-                    client.payment.refund(order.razorpay_payment_id, {
-                        "amount": amount_in_paise,
-                        "reverse_all_transfers": 1
-                    })
+                    from decimal import Decimal
+                    return_deduction = order.return_deduction_charge or Decimal('0.00')
+                    amount_to_refund = max(Decimal('0.00'), order.total_amount - return_deduction)
+                    amount_in_paise = int(amount_to_refund * 100)
+                    if amount_in_paise > 0:
+                        client.payment.refund(order.razorpay_payment_id, {
+                            "amount": amount_in_paise,
+                            "reverse_all_transfers": 1
+                        })
             except Exception as rzp_err:
                 print(f"[Razorpay Refund Note] {rzp_err}")
 
@@ -3729,3 +3840,65 @@ class ProcessOrderRefundView(APIView):
             'order_status': order.order_status,
             'reason': reason
         })
+
+
+class ResolveCustomerSessionView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from .models import CustomerSession, Order
+        token = request.query_params.get('token')
+        if not token:
+            return Response({'error': 'Token parameter is required.'}, status=400)
+
+        session = CustomerSession.objects.filter(token=token).first()
+        if not session:
+            return Response({'found': False, 'message': 'Session not found.'}, status=404)
+
+        from django.utils import timezone
+        session.last_active_at = timezone.now()
+        session.save(update_fields=['last_active_at'])
+
+        orders_data = []
+        orders_qs = Order.objects.filter(customer_session_token=token).order_by('-created_at')
+        for o in orders_qs:
+            orders_data.append({
+                'order_id': o.order_id,
+                'order_status': o.order_status,
+                'total_amount': str(o.total_amount),
+                'created_at': o.created_at
+            })
+
+        return Response({
+            'found': True,
+            'token': session.token,
+            'instagram_username': session.instagram_username,
+            'instagram_scoped_id': session.instagram_scoped_id,
+            'instagram_profile_pic': session.instagram_profile_pic,
+            'saved_address': {
+                'customer_name': session.saved_customer_name or '',
+                'customer_email': session.saved_customer_email or '',
+                'customer_phone': session.saved_customer_phone or '',
+                'shipping_address': session.saved_shipping_address or '',
+                'shipping_pincode': session.saved_shipping_pincode or '',
+                'shipping_place': session.saved_shipping_place or '',
+                'shipping_district': session.saved_shipping_district or '',
+                'shipping_state': session.saved_shipping_state or ''
+            },
+            'recent_orders': orders_data
+        })
+
+
+class CreateGuestSessionView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from .models import CustomerSession
+        import uuid
+        token = f"cs_{uuid.uuid4().hex}"
+        session = CustomerSession.objects.create(token=token)
+        return Response({
+            'token': session.token,
+            'message': 'Guest session created successfully.'
+        })
+

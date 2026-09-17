@@ -27,7 +27,9 @@ from .views import (
     AnalyticsOverviewView,
     RevenueOverviewView,
     ProcessOrderRefundView,
-    SellerPayoutModeView
+    SellerPayoutModeView,
+    ResolveCustomerSessionView,
+    CreateGuestSessionView
 )
 
 urlpatterns = [
@@ -62,4 +64,6 @@ urlpatterns = [
     path("store/track/<str:order_id>/", OrderTrackingView.as_view(), name="order-tracking"),
     path("seller/orders/", SellerOrdersView.as_view(), name="seller-orders"),
     path("seller/settlements/", SellerSettlementsView.as_view(), name="seller-settlements"),
+    path("session/resolve/", ResolveCustomerSessionView.as_view(), name="session-resolve"),
+    path("session/guest/", CreateGuestSessionView.as_view(), name="session-guest"),
 ]

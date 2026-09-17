@@ -27,6 +27,10 @@ class SystemSettingsAdmin(admin.ModelAdmin):
         ('AI Features', {
             'fields': ('enable_ai', 'enable_subscription_ai', 'business_gemini_api_key')
         }),
+        ('Payout & Automated Transfer Integration', {
+            'fields': ('enable_razorpay_route', 'enable_razorpay_payouts_api', 'manual_settlement_notes'),
+            'description': 'Enable Razorpay Route marketplace split or RazorpayX Payouts API once approved on your account.'
+        }),
     )
 
     def has_add_permission(self, request):

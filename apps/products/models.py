@@ -99,6 +99,9 @@ class Product(models.Model):
     cod_enabled = models.BooleanField(default=True)
     allow_return = models.BooleanField(default=False)
     allow_refund = models.BooleanField(default=False)
+    return_deduction_charge = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0.00,
+        help_text="Restocking/return fee deducted from customer refund amount")
 
     category = models.ForeignKey(
         Category,

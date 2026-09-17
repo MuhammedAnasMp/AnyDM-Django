@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 from django.db import models
+from django.http import HttpResponse
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -38,13 +39,14 @@ def parse_signed_request(signed_request):
             payload + '=' * (4 - len(payload) % 4)).decode('utf-8'))
 
         # Verify signature
+        client_secret = getattr(settings, 'INSTAGRAM_CLIENT_SECRET', '') or ''
         expected_sig = hmac.new(
-            settings.INSTAGRAM_CLIENT_SECRET.encode('utf-8'),
+            client_secret.encode('utf-8'),
             payload.encode('utf-8'),
             hashlib.sha256
         ).digest()
 
-        if sig != expected_sig:
+        if not hmac.compare_digest(sig, expected_sig):
             return None
         return data
     except Exception as e:
@@ -155,17 +157,21 @@ class FirebaseLoginView(APIView):
                             user.referred_by = referrer
                             user.referred_by_set = True
 
-                            # Active commission creators do not receive referral points
-                            is_commission_creator = referrer.is_creator_program_active and referrer.creator_reward_type == 'commission'
-                            if not is_commission_creator:
+                            is_creator = getattr(referrer, 'is_creator_vip', False)
+                            is_active_creator = referrer.is_creator_program_active
+
+                            if is_creator and not is_active_creator:
+                                print(
+                                    f"[Referral] Referrer {referrer.username} is an expired Creator VIP. Signup referral points stopped.")
+                            elif is_creator and is_active_creator and referrer.creator_reward_type == 'commission':
+                                print(
+                                    f"[Referral] Referrer {referrer.username} is active commission creator. Signup points skipped.")
+                            else:
                                 sys_settings = SystemSettings.get_settings()
                                 referrer.points += sys_settings.referral_points
                                 referrer.save(update_fields=['points'])
                                 print(
                                     f"[Referral] User {user.username} referred by {referrer.username}. Awarded {sys_settings.referral_points} points.")
-                            else:
-                                print(
-                                    f"[Referral] User {user.username} referred by active commission creator {referrer.username}. Points skipped (active commission program).")
                             user.save()
                     except Exception as ref_err:
                         print(f"Error applying referral code: {ref_err}")
@@ -488,17 +494,21 @@ class InstagramLoginView(APIView):
                                     user.referred_by = referrer
                                     user.referred_by_set = True
 
-                                    # Active commission creators do not receive referral points
-                                    is_commission_creator = referrer.is_creator_program_active and referrer.creator_reward_type == 'commission'
-                                    if not is_commission_creator:
+                                    is_creator = getattr(referrer, 'is_creator_vip', False)
+                                    is_active_creator = referrer.is_creator_program_active
+
+                                    if is_creator and not is_active_creator:
+                                        print(
+                                            f"[Referral] Referrer {referrer.username} is an expired Creator VIP via IG. Signup referral points stopped.")
+                                    elif is_creator and is_active_creator and referrer.creator_reward_type == 'commission':
+                                        print(
+                                            f"[Referral] Referrer {referrer.username} is active commission creator via IG. Signup points skipped.")
+                                    else:
                                         sys_settings = SystemSettings.get_settings()
                                         referrer.points += sys_settings.referral_points
                                         referrer.save(update_fields=['points'])
                                         print(
                                             f"[Referral] User {user.username} referred by {referrer.username} via IG. Awarded {sys_settings.referral_points} points.")
-                                    else:
-                                        print(
-                                            f"[Referral] User {user.username} referred by active commission creator {referrer.username} via IG. Points skipped (active commission program).")
                                     user.save()
                             except Exception as ref_err:
                                 print(
@@ -647,9 +657,15 @@ class InstagramDeauthorizeView(APIView):
     """
     Called by Facebook when a user deauthorizes the Instagram app.
     """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return Response({
+            'message': 'Instagram Deauthorize Endpoint. Send a POST request with signed_request from Meta.'
+        }, status=status.HTTP_200_OK)
 
     def post(self, request):
-        signed_request = request.data.get('signed_request')
+        signed_request = request.data.get('signed_request') or request.POST.get('signed_request')
         if not signed_request:
             return Response({'error': 'No signed_request provided'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -678,9 +694,15 @@ class InstagramDataDeletionView(APIView):
     """
     Facebook Data Deletion Request Callback.
     """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return Response({
+            'message': 'Instagram Data Deletion Endpoint. Send a POST request with signed_request from Meta.'
+        }, status=status.HTTP_200_OK)
 
     def post(self, request):
-        signed_request = request.data.get('signed_request')
+        signed_request = request.data.get('signed_request') or request.POST.get('signed_request')
         if not signed_request:
             return Response({'error': 'No signed_request provided'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -689,10 +711,69 @@ class InstagramDataDeletionView(APIView):
             return Response({'error': 'Invalid signed_request'}, status=status.HTTP_400_BAD_REQUEST)
 
         user_id = data.get('user_id')
+        if user_id:
+            InstagramAccount.objects.filter(instagram_scoped_id=user_id).update(
+                access_token="",
+                used_for_login=False,
+                is_active=False
+            )
+            InstagramAccount.objects.filter(instagram_user_id=user_id).update(
+                access_token="",
+                used_for_login=False,
+                is_active=False
+            )
+            print(f"[InstagramDataDeletion] Processed data deletion for Instagram ID: {user_id}")
+
+        confirmation_code = f"del_{user_id}" if user_id else "del_unknown"
         # Return the required Facebook response format
         return Response({
-            'url': f'https://{request.get_host()}/api/accounts/auth/instagram/deletion-status/?id={user_id}',
-            'confirmation_code': f'del_{user_id}'
+            'url': f'https://{request.get_host()}/api/accounts/auth/instagram/deletion-status/?id={confirmation_code}',
+            'confirmation_code': confirmation_code
+        }, status=status.HTTP_200_OK)
+
+
+class InstagramDeletionStatusView(APIView):
+    """
+    Status view for Facebook Data Deletion Requests.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        confirmation_code = request.query_params.get('id', 'N/A')
+
+        if 'text/html' in request.META.get('HTTP_ACCEPT', ''):
+            html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Deletion Status - AnyDM</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background-color: #f8fafc; color: #0f172a; }}
+        .card {{ background: white; padding: 2.5rem; border-radius: 1rem; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05); max-width: 480px; width: 100%; text-align: center; border: 1px solid #e2e8f0; }}
+        .icon {{ width: 64px; height: 64px; background: #dcfce7; color: #166534; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 1.5rem auto; font-size: 1.75rem; font-weight: bold; }}
+        h1 {{ font-size: 1.5rem; margin-bottom: 0.5rem; color: #0f172a; }}
+        p {{ color: #475569; font-size: 0.95rem; line-height: 1.5; margin-bottom: 1.5rem; }}
+        .code-box {{ background: #f1f5f9; border: 1px dashed #cbd5e1; padding: 0.75rem 1rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.9rem; color: #334155; word-break: break-all; margin-bottom: 1.5rem; }}
+        .footer {{ font-size: 0.8rem; color: #94a3b8; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">✓</div>
+        <h1>Data Deletion Completed</h1>
+        <p>Your Instagram account data deletion request has been processed successfully according to Meta Platform policies.</p>
+        <div class="code-box">Confirmation Code: {confirmation_code}</div>
+        <div class="footer">AnyDM Compliance & Security</div>
+    </div>
+</body>
+</html>"""
+            return HttpResponse(html_content, content_type='text/html')
+
+        return Response({
+            'status': 'completed',
+            'message': 'Your Instagram data deletion request has been processed successfully.',
+            'confirmation_code': confirmation_code
         }, status=status.HTTP_200_OK)
 
 
@@ -718,7 +799,7 @@ class UpdateProfileView(APIView):
             user.save()
             return Response({
                 'message': 'Profile updated successfully',
-                'display_name': user.first_name,
+                'display_name': get_user_display_name_helper(user),
                 'photo_url': getattr(user, 'photo_url', None) or photo_url
             })
 
@@ -962,6 +1043,25 @@ class InstagramMediaProxyView(APIView):
             return Response({'error': f'Failed to proxy media: {str(e)}'}, status=status.HTTP_502_BAD_GATEWAY)
 
 
+def check_domain_dns_configured(domain):
+    """
+    Checks if custom domain DNS (CNAME or A record) resolves to a valid IP address.
+    """
+    if not domain:
+        return False
+    import socket
+    import re
+    clean_domain = domain.strip().lower()
+    clean_domain = re.sub(r'^https?://', '', clean_domain).strip('/')
+    try:
+        ip = socket.gethostbyname(clean_domain)
+        if ip:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 class WebsiteSettingsView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -995,6 +1095,7 @@ class WebsiteSettingsView(APIView):
             'store_logo': settings_obj.store_logo,
             'store_slug': settings_obj.store_slug,
             'custom_domain': settings_obj.custom_domain,
+            'custom_domain_verified': check_domain_dns_configured(settings_obj.custom_domain) if settings_obj.custom_domain else False,
             'store_banner': settings_obj.store_banner,
             'store_description': settings_obj.store_description,
             'contact_email': settings_obj.contact_email,
@@ -1146,7 +1247,13 @@ class WebsiteSettingsView(APIView):
 
         cf_res = None
         if settings_obj.custom_domain:
-            cf_res = sync_cloudflare_custom_domain(settings_obj.custom_domain)
+            try:
+                cf_res = sync_cloudflare_custom_domain(settings_obj.custom_domain)
+            except Exception as cf_err:
+                import logging
+                local_logger = logging.getLogger(__name__)
+                local_logger.error("Error syncing Cloudflare domain: %s", cf_err)
+                cf_res = {'status': 'error', 'message': str(cf_err)}
 
         return Response({
             'message': 'Website settings updated successfully',
@@ -1608,10 +1715,22 @@ class PublicProductDetailView(APIView):
 
 # ── Refer & Earn & Subscription Support Views ───────────────────────────
 
+def get_user_display_name_helper(u):
+    if not u:
+        return "User"
+    active_ig = getattr(u, 'active_instagram_account', None) or u.instagram_accounts.filter(is_active=True).first()
+    if active_ig and (active_ig.full_name or active_ig.username):
+        return active_ig.full_name or active_ig.username
+    return u.first_name or get_clean_first_name(name=u.first_name, email=u.email) or u.username
+
+
 def serialize_user_payload(user):
-    display = user.first_name or get_clean_first_name(name=user.first_name, email=user.email) or user.username
+    display = get_user_display_name_helper(user)
     if display == user.firebase_uid or (len(display) > 24 and not display.startswith("ig_")):
         display = get_clean_first_name(email=user.email) or "User"
+
+    is_premium = user.is_premium_active
+    effective_plan = 'expired' if (user.plan == 'pro' and not is_premium) else user.plan
 
     payload = {
         'id': user.id,
@@ -1621,7 +1740,7 @@ def serialize_user_payload(user):
         'display_name': display,
         'photo_url': getattr(user, 'photo_url', None),
         'active_instagram_account_id': user.active_instagram_account_id,
-        'plan': user.plan,
+        'plan': effective_plan,
         'points': user.points,
         'referral_code': user.referral_code,
         'trial_days': user.trial_days,
@@ -1630,13 +1749,15 @@ def serialize_user_payload(user):
         'has_extended_trial': user.has_extended_trial,
         'referred_by_set': user.referred_by_set,
         'referred_by': user.referred_by.referral_code if user.referred_by else None,
-        'is_premium_active': user.is_premium_active,
+        'is_premium_active': is_premium,
         'trial_days_left': user.trial_days_left,
         'custom_code_set': getattr(user, 'custom_code_set', False),
         'is_creator_vip': user.is_creator_vip,
         'creator_reward_type': user.creator_reward_type,
         'creator_commission_percent': float(user.creator_commission_percent) if user.creator_commission_percent else 10.0,
         'creator_program_expires_at': user.creator_program_expires_at.isoformat() if getattr(user, 'creator_program_expires_at', None) else None,
+        'creator_custom_points_per_paid_sub': user.creator_custom_points_per_paid_sub,
+        'effective_points_per_paid_sub': user.get_points_per_paid_sub(),
         'is_creator_program_active': getattr(user, 'is_creator_program_active', False),
         'is_following_official_account': getattr(user, 'is_following_official_account', False),
         'official_follow_points_awarded': getattr(user, 'official_follow_points_awarded', 0),
@@ -1666,12 +1787,19 @@ class ReferralStatsView(APIView):
             referred_by=user).order_by('-date_joined')
         referred_users = []
         for u in referred_users_qs:
+            active_ig = getattr(u, 'active_instagram_account', None) or u.instagram_accounts.filter(is_active=True).first()
+            pic = active_ig.profile_picture_url if active_ig else None
+            disp = get_user_display_name_helper(u)
+
             referred_users.append({
                 'username': u.username,
-                'display_name': u.first_name or u.username,
+                'display_name': disp,
+                'profile_picture_url': pic,
                 'date_joined': u.date_joined.isoformat(),
                 'is_premium_active': u.is_premium_active,
-                'plan': u.plan
+                'plan': u.plan,
+                'trial_days_left': u.trial_days_left,
+                'has_extended_trial': u.has_extended_trial,
             })
 
         # Leaderboard (Top 3 users with most referrals)
@@ -1683,7 +1811,7 @@ class ReferralStatsView(APIView):
         for idx, u in enumerate(leaderboard_qs, 1):
             leaderboard.append({
                 'rank': idx,
-                'display_name': u.first_name or u.username,
+                'display_name': get_user_display_name_helper(u),
                 'referral_count': u.ref_count
             })
 
@@ -1710,6 +1838,7 @@ class ReferralStatsView(APIView):
             'active_ig_handle': active_ig_handle,
             'trial_days_left': user.trial_days_left,
             'plan': user.plan,
+            'premium_expires_at': user.premium_expires_at.isoformat() if user.premium_expires_at else None,
             'is_premium_active': user.is_premium_active,
             'has_extended_trial': user.has_extended_trial,
             'referred_by_set': user.referred_by_set,
@@ -1753,7 +1882,7 @@ class SetReferredByView(APIView):
             f"[Referral-Linked] User {user.username} linked referrer code {code} ({referrer.username}). Granted 15-day trial.")
 
         return Response({
-            'message': f'Referrer linked successfully! You were referred by {referrer.first_name or referrer.username} and granted a 15-day trial.',
+            'message': f'Referrer linked successfully! You were referred by {get_user_display_name_helper(referrer)} and granted a 15-day trial.',
             'user': serialize_user_payload(user)
         }, status=status.HTTP_200_OK)
 
@@ -1972,6 +2101,9 @@ class GrantCreatorVIPView(APIView):
     def post(self, request):
         email = request.data.get('email', '').strip()
         custom_end_date = request.data.get('end_date')
+        custom_points = request.data.get('custom_points_per_paid_sub')
+        if custom_points is None:
+            custom_points = request.data.get('custom_points')
 
         if not email:
             return Response({'error': 'Email address or username is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1993,6 +2125,17 @@ class GrantCreatorVIPView(APIView):
         target_user.plan = 'pro'
         target_user.is_creator_vip = True
         target_user.creator_reward_type = 'vip'
+
+        if custom_points is not None:
+            c_str = str(custom_points).strip()
+            if c_str != '' and c_str.lower() != 'default' and c_str.lower() != 'null':
+                try:
+                    target_user.creator_custom_points_per_paid_sub = int(c_str)
+                except (ValueError, TypeError):
+                    pass
+            else:
+                target_user.creator_custom_points_per_paid_sub = None
+
         now = timezone.now()
 
         if custom_end_date:
@@ -2013,7 +2156,7 @@ class GrantCreatorVIPView(APIView):
         auto_enable_subscription_ai_for_user(target_user)
 
         print(
-            f"[Creator-VIP-Grant] Granted Creator Pro VIP access to {target_user.username} ({email}). Expires: {target_user.creator_program_expires_at}")
+            f"[Creator-VIP-Grant] Granted Creator Pro VIP access to {target_user.username} ({email}). Custom points: {target_user.creator_custom_points_per_paid_sub}. Expires: {target_user.creator_program_expires_at}")
 
         return Response({
             'message': f'Granted Creator Pro VIP access to {target_user.username} ({email}) until {expiry_dt.strftime("%d %b %Y")}!',
@@ -2022,12 +2165,15 @@ class GrantCreatorVIPView(APIView):
 
 
 class SetCreatorRewardTypeView(APIView):
-    """Admin endpoint to set a creator's reward type (VIP or Commission), duration term/end date, and commission %."""
+    """Admin endpoint to set a creator's reward type (VIP or Commission), duration term/end date, commission %, and custom points per paid sub."""
     def post(self, request):
         email = request.data.get('email', '').strip()
         reward_type = request.data.get('reward_type', '').strip()
         commission_percent = request.data.get('commission_percent', 10)
         custom_end_date = request.data.get('end_date')
+        custom_points = request.data.get('custom_points_per_paid_sub')
+        if custom_points is None:
+            custom_points = request.data.get('custom_points')
 
         if not email:
             return Response({'error': 'Email or username is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -2049,6 +2195,17 @@ class SetCreatorRewardTypeView(APIView):
 
         target_user.is_creator_vip = True
         target_user.creator_reward_type = reward_type
+
+        if custom_points is not None:
+            c_str = str(custom_points).strip()
+            if c_str != '' and c_str.lower() != 'default' and c_str.lower() != 'null':
+                try:
+                    target_user.creator_custom_points_per_paid_sub = int(c_str)
+                except (ValueError, TypeError):
+                    pass
+            else:
+                target_user.creator_custom_points_per_paid_sub = None
+
         now = timezone.now()
 
         if reward_type == 'commission':
@@ -2076,7 +2233,7 @@ class SetCreatorRewardTypeView(APIView):
             target_user.save()
             auto_enable_subscription_ai_for_user(target_user)
 
-            print(f"[Creator-Commission-Set] Set {target_user.username} to commission mode at {commission_percent}% (Expires: {target_user.creator_program_expires_at}).")
+            print(f"[Creator-Commission-Set] Set {target_user.username} to commission mode at {commission_percent}% (Custom points: {target_user.creator_custom_points_per_paid_sub}, Expires: {target_user.creator_program_expires_at}).")
             return Response({
                 'message': f'Set {target_user.username} to Commission mode at {commission_percent}% until {target_user.creator_program_expires_at.strftime("%d %b %Y")}!',
                 'user': serialize_user_payload(target_user)
@@ -2103,7 +2260,7 @@ class SetCreatorRewardTypeView(APIView):
             target_user.save()
             auto_enable_subscription_ai_for_user(target_user)
 
-            print(f"[Creator-VIP-Set] Set {target_user.username} to VIP Free Pro mode until {expiry_dt}.")
+            print(f"[Creator-VIP-Set] Set {target_user.username} to VIP Free Pro mode (Custom points: {target_user.creator_custom_points_per_paid_sub}) until {expiry_dt}.")
             return Response({
                 'message': f'Granted Creator Pro VIP access to {target_user.username} until {expiry_dt.strftime("%d %b %Y")}!',
                 'user': serialize_user_payload(target_user)
@@ -2134,7 +2291,7 @@ class CreatorEarningsView(APIView):
         for c in commissions_qs[:50]:
             commissions_list.append({
                 'id': c.id,
-                'referred_user': c.referred_user.first_name or c.referred_user.username,
+                'referred_user': get_user_display_name_helper(c.referred_user),
                 'referred_username': c.referred_user.username,
                 'payment_amount': float(c.payment_amount),
                 'commission_percent': float(c.commission_percent),
@@ -2150,12 +2307,39 @@ class CreatorEarningsView(APIView):
 
         referred_users_list = []
         for ref_u in referred_qs[:30]:
+            active_ig = getattr(ref_u, 'active_instagram_account', None) or ref_u.instagram_accounts.filter(is_active=True).first()
             referred_users_list.append({
                 'username': ref_u.username,
-                'display_name': ref_u.first_name or ref_u.username,
+                'display_name': get_user_display_name_helper(ref_u),
                 'date_joined': ref_u.date_joined.isoformat(),
                 'is_premium_active': ref_u.is_premium_active,
-                'profile_picture_url': getattr(ref_u, 'active_instagram_account', None).profile_picture_url if getattr(ref_u, 'active_instagram_account', None) else None,
+                'plan': ref_u.plan,
+                'trial_days_left': ref_u.trial_days_left,
+                'has_extended_trial': ref_u.has_extended_trial,
+                'profile_picture_url': active_ig.profile_picture_url if active_ig else None,
+            })
+
+        from apps.accounts.models import SellerKYC
+        from apps.crm.models import Settlement
+        from apps.settings.models import SystemSettings
+
+        sys_settings = SystemSettings.get_settings()
+        kyc = SellerKYC.objects.filter(user=user).first()
+        has_kyc = bool(kyc and (kyc.bank_account_number or kyc.upi_id))
+
+        # Recent settlements
+        creator_settlements = Settlement.objects.filter(seller=user, settlement_type='CREATOR_COMMISSION').order_by('-created_at')[:10]
+        settlements_list = []
+        for s in creator_settlements:
+            settlements_list.append({
+                'id': s.id,
+                'amount': float(s.seller_amount),
+                'status': s.status,
+                'transfer_mode': s.transfer_mode,
+                'utr_number': s.utr_number,
+                'payment_proof': s.payment_proof,
+                'created_at': s.created_at.isoformat(),
+                'paid_at': s.paid_at.isoformat() if s.paid_at else None,
             })
 
         return Response({
@@ -2169,11 +2353,68 @@ class CreatorEarningsView(APIView):
             'total_earned': float(total_earned),
             'total_pending': float(total_pending),
             'total_paid': float(total_paid),
+            'min_payout_amount': float(sys_settings.creator_min_payout_amount or 500.0),
+            'has_kyc': has_kyc,
+            'kyc_status': kyc.status if kyc else 'NOT_SUBMITTED',
             'commissions': commissions_list,
+            'settlements': settlements_list,
             'total_referrals': total_referrals,
             'paid_referrals': paid_referrals,
             'referred_users': referred_users_list,
         }, status=status.HTTP_200_OK)
+
+
+class CreatorPayoutRequestView(APIView):
+    """Creator endpoint to request payout for pending affiliate commissions."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not user.is_creator_vip or user.creator_reward_type != 'commission':
+            return Response({'error': 'Only creators in the Commission Earnings plan can request commission payouts.'}, status=400)
+
+        from apps.accounts.models import CreatorCommission, SellerKYC
+        from apps.crm.models import Settlement
+        from apps.settings.models import SystemSettings
+        from apps.crm.services.payout_service import process_creator_payout
+        from django.db.models import Sum
+        from decimal import Decimal
+
+        pending_qs = CreatorCommission.objects.filter(creator=user, status='pending')
+        total_pending = pending_qs.aggregate(total=Sum('commission_amount'))['total'] or Decimal('0')
+
+        sys_settings = SystemSettings.get_settings()
+        min_payout = sys_settings.creator_min_payout_amount or Decimal('500.00')
+
+        if total_pending < min_payout:
+            return Response({'error': f'Minimum payout threshold is ₹{float(min_payout):,.2f}. You currently have ₹{float(total_pending):,.2f} pending.'}, status=400)
+
+        kyc = SellerKYC.objects.filter(user=user).first()
+        if not kyc or (not kyc.bank_account_number and not kyc.upi_id):
+            return Response({'error': 'Please configure your Bank Account or UPI details in Settings > KYC before requesting a payout.'}, status=400)
+
+        first_commission = pending_qs.first()
+        settlement = Settlement.objects.create(
+            seller=user,
+            creator_commission=first_commission,
+            settlement_type='CREATOR_COMMISSION',
+            order_amount=total_pending,
+            commission=Decimal('0.00'),
+            razorpay_fee=Decimal('0.00'),
+            seller_amount=total_pending,
+            status='PENDING'
+        )
+
+        p_res = process_creator_payout(settlement.id)
+
+        return Response({
+            'message': 'Payout request submitted successfully!',
+            'settlement_id': settlement.id,
+            'amount': float(total_pending),
+            'status': settlement.status,
+            'transfer_mode': settlement.transfer_mode,
+            'payout_result': p_res
+        })
 
 
 class AdminSettleCreatorCommissionView(APIView):
@@ -2247,7 +2488,7 @@ class AdminVIPCreatorsListView(APIView):
                 'id': u.id,
                 'username': u.username,
                 'email': u.email or u.username,
-                'display_name': u.first_name or u.username,
+                'display_name': get_user_display_name_helper(u),
                 'referral_code': u.referral_code,
                 'invite_count': u.invite_count,
                 'is_creator_vip': u.is_creator_vip,
@@ -2332,7 +2573,7 @@ class AdminUsersAnalyticsView(APIView):
                     paid_referred_count += 1
                 referred_users_list.append({
                     'username': ref.username,
-                    'display_name': ref.first_name or ref.username,
+                    'display_name': get_user_display_name_helper(ref),
                     'date_joined': ref.date_joined.isoformat(),
                     'is_premium_active': is_active_pro,
                     'plan': ref.plan
@@ -2360,11 +2601,20 @@ class AdminUsersAnalyticsView(APIView):
                     'is_card_verified': kyc_obj.is_card_verified,
                 }
 
+            primary_photo = u.photo_url
+            if not primary_photo and ig_accounts_list:
+                for ig_acc in ig_accounts_list:
+                    if ig_acc.get('profile_picture_url'):
+                        primary_photo = ig_acc['profile_picture_url']
+                        break
+
             users_data.append({
                 'id': u.id,
                 'username': u.username,
                 'email': u.email or u.username,
-                'display_name': u.first_name or u.username,
+                'display_name': get_user_display_name_helper(u),
+                'photo_url': primary_photo,
+                'profile_picture_url': primary_photo,
                 'referral_code': u.referral_code,
                 'is_creator_vip': u.is_creator_vip,
                 'creator_reward_type': u.creator_reward_type,
@@ -2418,13 +2668,17 @@ class GlobalSystemSettingsView(APIView):
             # 🎁 Creator VIP Free Pro
             'creator_vip_extended_trial_days': getattr(sys_settings, 'creator_vip_extended_trial_days', 15),
             'creator_vip_points_per_paid_sub': getattr(sys_settings, 'creator_vip_points_per_paid_sub', 20),
-            'creator_vip_max_redemption_months': getattr(sys_settings, 'creator_vip_max_redemption_months', 5),
             'creator_vip_default_term_months': getattr(sys_settings, 'creator_vip_default_term_months', 3),
             # 💰 Creator Commission Earnings
             'creator_commission_percent': float(getattr(sys_settings, 'creator_commission_percent', 10.00)),
             'creator_min_payout_amount': float(getattr(sys_settings, 'creator_min_payout_amount', 500.00)),
             'creator_payout_cycle_days': getattr(sys_settings, 'creator_payout_cycle_days', 30),
             'creator_commission_default_term_months': getattr(sys_settings, 'creator_commission_default_term_months', 6),
+            'creator_commission_points_per_paid_sub': getattr(sys_settings, 'creator_commission_points_per_paid_sub', 0),
+            # Payouts API Flags
+            'enable_razorpay_route': sys_settings.enable_razorpay_route,
+            'enable_razorpay_payouts_api': sys_settings.enable_razorpay_payouts_api,
+            'manual_settlement_notes': sys_settings.manual_settlement_notes,
         }, status=status.HTTP_200_OK)
 
     def post(self, request):
@@ -2444,15 +2698,20 @@ class GlobalSystemSettingsView(APIView):
         enable_subscription_ai = request.data.get('enable_subscription_ai')
         business_gemini_api_key = request.data.get('business_gemini_api_key')
 
+        # Payout flags
+        enable_razorpay_route = request.data.get('enable_razorpay_route')
+        enable_razorpay_payouts_api = request.data.get('enable_razorpay_payouts_api')
+        manual_settlement_notes = request.data.get('manual_settlement_notes')
+
         # Creator VIP & Commission fields
         creator_vip_extended_trial_days = request.data.get('creator_vip_extended_trial_days')
         creator_vip_points_per_paid_sub = request.data.get('creator_vip_points_per_paid_sub')
-        creator_vip_max_redemption_months = request.data.get('creator_vip_max_redemption_months')
         creator_vip_default_term_months = request.data.get('creator_vip_default_term_months')
         creator_commission_percent = request.data.get('creator_commission_percent')
         creator_min_payout_amount = request.data.get('creator_min_payout_amount')
         creator_payout_cycle_days = request.data.get('creator_payout_cycle_days')
         creator_commission_default_term_months = request.data.get('creator_commission_default_term_months')
+        creator_commission_points_per_paid_sub = request.data.get('creator_commission_points_per_paid_sub')
 
         if trial_days is not None:
             sys_settings.trial_days = int(trial_days)
@@ -2473,12 +2732,17 @@ class GlobalSystemSettingsView(APIView):
         if business_gemini_api_key is not None:
             sys_settings.business_gemini_api_key = str(business_gemini_api_key)
 
+        if enable_razorpay_route is not None:
+            sys_settings.enable_razorpay_route = bool(enable_razorpay_route)
+        if enable_razorpay_payouts_api is not None:
+            sys_settings.enable_razorpay_payouts_api = bool(enable_razorpay_payouts_api)
+        if manual_settlement_notes is not None:
+            sys_settings.manual_settlement_notes = str(manual_settlement_notes)
+
         if creator_vip_extended_trial_days is not None:
             sys_settings.creator_vip_extended_trial_days = int(creator_vip_extended_trial_days)
         if creator_vip_points_per_paid_sub is not None:
             sys_settings.creator_vip_points_per_paid_sub = int(creator_vip_points_per_paid_sub)
-        if creator_vip_max_redemption_months is not None:
-            sys_settings.creator_vip_max_redemption_months = int(creator_vip_max_redemption_months)
         if creator_vip_default_term_months is not None:
             sys_settings.creator_vip_default_term_months = int(creator_vip_default_term_months)
         if creator_commission_percent is not None:
@@ -2489,6 +2753,8 @@ class GlobalSystemSettingsView(APIView):
             sys_settings.creator_payout_cycle_days = int(creator_payout_cycle_days)
         if creator_commission_default_term_months is not None:
             sys_settings.creator_commission_default_term_months = int(creator_commission_default_term_months)
+        if creator_commission_points_per_paid_sub is not None:
+            sys_settings.creator_commission_points_per_paid_sub = int(creator_commission_points_per_paid_sub)
 
         sys_settings.save()
         print(f"[Settings Update] Global settings updated: {sys_settings}")
@@ -2508,12 +2774,12 @@ class GlobalSystemSettingsView(APIView):
                 'business_gemini_api_key': sys_settings.business_gemini_api_key,
                 'creator_vip_extended_trial_days': getattr(sys_settings, 'creator_vip_extended_trial_days', 15),
                 'creator_vip_points_per_paid_sub': getattr(sys_settings, 'creator_vip_points_per_paid_sub', 20),
-                'creator_vip_max_redemption_months': getattr(sys_settings, 'creator_vip_max_redemption_months', 5),
                 'creator_vip_default_term_months': getattr(sys_settings, 'creator_vip_default_term_months', 3),
                 'creator_commission_percent': float(getattr(sys_settings, 'creator_commission_percent', 10.00)),
                 'creator_min_payout_amount': float(getattr(sys_settings, 'creator_min_payout_amount', 500.00)),
                 'creator_payout_cycle_days': getattr(sys_settings, 'creator_payout_cycle_days', 30),
                 'creator_commission_default_term_months': getattr(sys_settings, 'creator_commission_default_term_months', 6),
+                'creator_commission_points_per_paid_sub': getattr(sys_settings, 'creator_commission_points_per_paid_sub', 0),
             }
         }, status=status.HTTP_200_OK)
 
@@ -2659,7 +2925,10 @@ class RazorpayVerifyPaymentView(APIView):
             user.plan = 'pro'
             user.pro_purchase_count = getattr(
                 user, 'pro_purchase_count', 0) + 1
-            user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
+            if user.premium_expires_at and user.premium_expires_at > timezone.now():
+                user.premium_expires_at += timezone.timedelta(days=30)
+            else:
+                user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
 
             # Reward referrer on first paid purchase
             if user.referred_by and not getattr(user, 'referral_paid_reward_given', False):
@@ -2668,11 +2937,15 @@ class RazorpayVerifyPaymentView(APIView):
                 referrer = user.referred_by
                 user.referral_paid_reward_given = True
 
-                # Creator Commission / VIP Points / Standard Points based on active program
-                is_active_commission = referrer.is_creator_program_active and referrer.creator_reward_type == 'commission'
-                is_active_vip = referrer.is_creator_program_active and referrer.creator_reward_type == 'vip'
+                is_creator = getattr(referrer, 'is_creator_vip', False)
+                is_active = referrer.is_creator_program_active
+                is_active_commission = is_creator and is_active and referrer.creator_reward_type == 'commission'
+                is_active_vip = is_creator and is_active and referrer.creator_reward_type == 'vip'
 
-                if is_active_commission:
+                if is_creator and not is_active:
+                    print(
+                        f"[Purchase-Reward-Skipped] Referrer {referrer.username} is a Creator VIP whose program has EXPIRED. All rewards (commissions & points) stopped.")
+                elif is_active_commission:
                     from decimal import Decimal
                     from apps.accounts.models import CreatorCommission
                     try:
@@ -2688,17 +2961,22 @@ class RazorpayVerifyPaymentView(APIView):
                         commission_percent=pct,
                         commission_amount=commission_amt,
                     )
+                    comm_points = referrer.get_points_per_paid_sub()
+                    if comm_points > 0:
+                        referrer.points += comm_points
+                        referrer.save(update_fields=['points'])
                     print(
-                        f"[Creator-Commission] {referrer.username} earned {commission_amt} ({pct}% of {plan_price}) from {user.username}'s first purchase (commission mode active, no points awarded).")
+                        f"[Creator-Commission] {referrer.username} earned {commission_amt} ({pct}% of {plan_price}) from {user.username}'s first purchase (Commission mode points awarded: {comm_points}).")
                 elif is_active_vip:
                     # VIP Free Pro creator receives VIP bonus points per conversion
-                    reward_points = getattr(sys_settings, 'creator_vip_points_per_paid_sub', 20) or 20
-                    referrer.points += reward_points
-                    referrer.save(update_fields=['points'])
+                    reward_points = referrer.get_points_per_paid_sub()
+                    if reward_points > 0:
+                        referrer.points += reward_points
+                        referrer.save(update_fields=['points'])
                     print(
                         f"[VIP-Purchase-Reward] User {user.username} paid. Credited {reward_points} VIP conversion points to {referrer.username}.")
-                else:
-                    # Program expired or standard user: gets standard referral points
+                elif not is_creator:
+                    # Standard non-creator user gets standard referral points
                     reward_points = sys_settings.referral_points or 20
                     referrer.points += reward_points
                     referrer.save(update_fields=['points'])
@@ -2764,12 +3042,21 @@ class RazorpayWebhookView(APIView):
                         from django.utils import timezone
                         user.plan = 'pro'
                         user.pro_purchase_count = getattr(user, 'pro_purchase_count', 0) + 1
-                        user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
+                        if user.premium_expires_at and user.premium_expires_at > timezone.now():
+                            user.premium_expires_at += timezone.timedelta(days=30)
+                        else:
+                            user.premium_expires_at = timezone.now() + timezone.timedelta(days=30)
 
-                        # Creator Commission via webhook (first payment only)
                         if user.referred_by and not getattr(user, 'referral_paid_reward_given', False):
+                            user.referral_paid_reward_given = True
                             referrer = user.referred_by
-                            if referrer.is_creator_vip and referrer.creator_reward_type == 'commission':
+                            is_creator = getattr(referrer, 'is_creator_vip', False)
+                            is_active = referrer.is_creator_program_active
+
+                            if is_creator and not is_active:
+                                print(
+                                    f"[Webhook-Purchase-Reward-Skipped] Referrer {referrer.username} is a Creator VIP whose program has EXPIRED. All rewards stopped.")
+                            elif is_creator and is_active and referrer.creator_reward_type == 'commission':
                                 from decimal import Decimal
                                 from apps.accounts.models import CreatorCommission
                                 from apps.settings.models import SystemSettings
@@ -2787,8 +3074,27 @@ class RazorpayWebhookView(APIView):
                                     commission_percent=pct,
                                     commission_amount=commission_amt,
                                 )
+                                comm_points = referrer.get_points_per_paid_sub()
+                                if comm_points > 0:
+                                    referrer.points += comm_points
+                                    referrer.save(update_fields=['points'])
                                 print(
-                                    f"[Creator-Commission-Webhook] {referrer.username} earned {commission_amt} from {user.username}'s first purchase.")
+                                    f"[Creator-Commission-Webhook] {referrer.username} earned {commission_amt} from {user.username}'s first purchase (Commission points: {comm_points}).")
+                            elif is_creator and is_active and referrer.creator_reward_type == 'vip':
+                                reward_points = referrer.get_points_per_paid_sub()
+                                if reward_points > 0:
+                                    referrer.points += reward_points
+                                    referrer.save(update_fields=['points'])
+                                print(
+                                    f"[VIP-Purchase-Reward-Webhook] User {user.username} paid. Credited {reward_points} VIP points to {referrer.username}.")
+                            elif not is_creator:
+                                from apps.settings.models import SystemSettings
+                                sys_settings = SystemSettings.get_settings()
+                                reward_points = sys_settings.referral_points or 20
+                                referrer.points += reward_points
+                                referrer.save(update_fields=['points'])
+                                print(
+                                    f"[Standard-Purchase-Reward-Webhook] User {user.username} paid. Credited {reward_points} referral points to {referrer.username}.")
 
                         user.save()
                         auto_enable_subscription_ai_for_user(user)

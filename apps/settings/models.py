@@ -54,7 +54,6 @@ class SystemSettings(models.Model):
     # 🎁 Creator VIP Free Pro Program
     creator_vip_extended_trial_days = models.IntegerField(default=15)
     creator_vip_points_per_paid_sub = models.IntegerField(default=20)
-    creator_vip_max_redemption_months = models.IntegerField(default=5)
     creator_vip_default_term_months = models.IntegerField(default=3)
 
     # 💰 Creator Commission Earnings Program
@@ -62,6 +61,12 @@ class SystemSettings(models.Model):
     creator_min_payout_amount = models.DecimalField(max_digits=10, decimal_places=2, default=500.00)
     creator_payout_cycle_days = models.IntegerField(default=30)
     creator_commission_default_term_months = models.IntegerField(default=6)
+    creator_commission_points_per_paid_sub = models.IntegerField(default=0)
+
+    # Payout & Automated Transfer Configurations
+    enable_razorpay_route = models.BooleanField(default=False)
+    enable_razorpay_payouts_api = models.BooleanField(default=False)
+    manual_settlement_notes = models.TextField(blank=True, default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

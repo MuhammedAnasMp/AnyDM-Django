@@ -44,6 +44,7 @@ class User(AbstractUser):
     official_follow_at = models.DateTimeField(null=True, blank=True)
     official_unfollow_at = models.DateTimeField(null=True, blank=True)
     creator_program_expires_at = models.DateTimeField(null=True, blank=True)
+    creator_custom_points_per_paid_sub = models.IntegerField(null=True, blank=True, default=None)
 
     @property
     def is_creator_program_active(self):
@@ -53,6 +54,15 @@ class User(AbstractUser):
         if self.creator_program_expires_at:
             return self.creator_program_expires_at > timezone.now()
         return True
+
+    def get_points_per_paid_sub(self):
+        if self.creator_custom_points_per_paid_sub is not None:
+            return self.creator_custom_points_per_paid_sub
+        from apps.settings.models import SystemSettings
+        sys_settings = SystemSettings.get_settings()
+        if self.creator_reward_type == 'commission':
+            return getattr(sys_settings, 'creator_commission_points_per_paid_sub', 0) or 0
+        return getattr(sys_settings, 'creator_vip_points_per_paid_sub', 20) or 20
 
     @property
     def is_premium_active(self):
@@ -283,6 +293,7 @@ class SellerKYC(models.Model):
     bank_name = models.CharField(max_length=255, blank=True, null=True)
     bank_account_number = models.CharField(max_length=100, blank=True, null=True)
     bank_ifsc = models.CharField(max_length=50, blank=True, null=True)
+    upi_id = models.CharField(max_length=255, blank=True, null=True)
     razorpay_account_id = models.CharField(max_length=100, blank=True, null=True)
     razorpay_stakeholder_id = models.CharField(max_length=100, blank=True, null=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')

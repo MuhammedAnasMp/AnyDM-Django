@@ -112,7 +112,52 @@ def record_outbound_dm_metrics(account, response):
         logger.warning(f"Failed to record outbound DM metrics for account {account.id}: {e}")
 
 
-def sanitize_meta_button(btn):
+def get_or_create_customer_session(account, recipient_id):
+    """
+    Finds or creates a CustomerSession token for a given Instagram user ID (recipient_id).
+    Links Customer, InstagramAccount, and username if available.
+    """
+    from apps.crm.models import Customer, CustomerSession
+    import uuid
+
+    scoped_id = str(recipient_id).strip()
+    session = CustomerSession.objects.filter(
+        instagram_account=account,
+        instagram_scoped_id=scoped_id
+    ).first()
+
+    if not session:
+        customer = Customer.objects.filter(owner=account, instagram_scoped_id=scoped_id).first()
+        token = f"cs_{uuid.uuid4().hex}"
+        session = CustomerSession.objects.create(
+            token=token,
+            customer=customer,
+            instagram_account=account,
+            instagram_scoped_id=scoped_id,
+            instagram_username=customer.username if customer else None,
+            instagram_profile_pic=customer.profile_pic if customer else None
+        )
+    elif session.customer is None:
+        customer = Customer.objects.filter(owner=account, instagram_scoped_id=scoped_id).first()
+        if customer:
+            session.customer = customer
+            session.instagram_username = customer.username
+            session.instagram_profile_pic = customer.profile_pic
+            session.save(update_fields=['customer', 'instagram_username', 'instagram_profile_pic'])
+
+    return session
+
+
+def append_customer_session_token(raw_url, session_token):
+    if not raw_url or not session_token:
+        return raw_url
+    if "cs=" in raw_url:
+        return raw_url
+    sep = "&" if "?" in raw_url else "?"
+    return f"{raw_url}{sep}cs={session_token}"
+
+
+def sanitize_meta_button(btn, session_token=None):
     """
     Sanitizes a button dict to strictly match Meta Graph API requirements.
     web_url: type, title, url (NO payload, NO is_profile_button)
@@ -138,6 +183,8 @@ def sanitize_meta_button(btn):
         url = str(btn.get("url", "")).strip()
         if not url:
             return None
+        if session_token:
+            url = append_customer_session_token(url, session_token)
         return {
             "type": "web_url",
             "title": title or "Visit",
@@ -158,6 +205,15 @@ def send_instagram_dm(account, recipient_id, message_data, dm_format="text", rec
         logger.error(
             f"Cannot send DM: Account {account.id} missing access token or Instagram scoped ID.")
         return False, "Missing credentials"
+
+    # Resolve or generate CustomerSession for recipient
+    session_token = None
+    try:
+        session = get_or_create_customer_session(account, recipient_id)
+        if session:
+            session_token = session.token
+    except Exception as cs_err:
+        logger.warning(f"[ENGINE] Failed to resolve CustomerSession: {cs_err}")
 
     url = f"https://graph.instagram.com/v26.0/{instagram_scoped_id}/messages"
     headers = {
@@ -194,7 +250,7 @@ def send_instagram_dm(account, recipient_id, message_data, dm_format="text", rec
         raw_buttons = message_data.get("buttons", [])
         clean_buttons = []
         for b in raw_buttons:
-            sanitized = sanitize_meta_button(b)
+            sanitized = sanitize_meta_button(b, session_token=session_token)
             if sanitized:
                 clean_buttons.append(sanitized)
         message_payload = {
@@ -223,6 +279,8 @@ def send_instagram_dm(account, recipient_id, message_data, dm_format="text", rec
             if elem.get("default_action") and isinstance(elem.get("default_action"), dict):
                 def_url = str(elem["default_action"].get("url", "")).strip()
                 if def_url:
+                    if session_token:
+                        def_url = append_customer_session_token(def_url, session_token)
                     clean_elem["default_action"] = {
                         "type": "web_url",
                         "url": def_url
@@ -230,7 +288,7 @@ def send_instagram_dm(account, recipient_id, message_data, dm_format="text", rec
             raw_btns = elem.get("buttons", [])
             clean_btns = []
             for b in raw_btns:
-                sanitized = sanitize_meta_button(b)
+                sanitized = sanitize_meta_button(b, session_token=session_token)
                 if sanitized:
                     clean_btns.append(sanitized)
             if clean_btns:

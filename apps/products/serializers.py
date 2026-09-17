@@ -28,7 +28,7 @@ class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = [
-            'id', 'title', 'description', 'price', 'original_price', 'currency', 'stock',
+            'id', 'title', 'description', 'price', 'original_price', 'return_deduction_charge', 'currency', 'stock',
             'negotiable', 'category', 'location', 'media_url', 'source_type',
             'source_id', 'media_id', 'instagram_permalink', 'status', 'created_at',
             'updated_at', 'gallery', 'cloudinary_metadata', 'metadata',

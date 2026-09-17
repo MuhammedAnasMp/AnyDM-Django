@@ -162,8 +162,22 @@ def run_tests():
     assert temp_user.is_premium_active == False, "After time reached, Pro access MUST finish (is_premium_active = False)!"
     print(" [8] Pro Access Expiry Verified: User with expired premium_expires_at has is_premium_active = False (Pro finishes)")
 
+    # 9. Test Creator Program Expiration for both Commission and VIP modes
+    # Test Commission Creator Expiry
+    creator_a.creator_program_expires_at = timezone.now() - timedelta(days=1)
+    creator_a.save()
+    assert creator_a.is_creator_program_active == False, "Expired Commission Creator must have is_creator_program_active = False!"
+    
+    # Test VIP Free Pro Creator Expiry
+    creator_b.creator_program_expires_at = timezone.now() - timedelta(days=1)
+    creator_b.premium_expires_at = timezone.now() - timedelta(days=1)
+    creator_b.save()
+    assert creator_b.is_creator_program_active == False, "Expired VIP Creator must have is_creator_program_active = False!"
+    assert creator_b.is_premium_active == False, "Expired VIP Creator must have is_premium_active = False!"
+    print(" [9] Creator Program Expiry Verified: Both Commission & VIP modes stop perks/grants when program time expires!")
+
     print("=" * 60)
-    print("ALL 8 VERIFICATION TESTS PASSED SUCCESSFULLY! ")
+    print("ALL 9 VERIFICATION TESTS PASSED SUCCESSFULLY! ")
     print("=" * 60)
 
 if __name__ == '__main__':
