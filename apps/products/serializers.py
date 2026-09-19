@@ -32,6 +32,8 @@ class ProductSerializer(serializers.ModelSerializer):
             'negotiable', 'category', 'location', 'media_url', 'source_type',
             'source_id', 'media_id', 'instagram_permalink', 'status', 'created_at',
             'updated_at', 'gallery', 'cloudinary_metadata', 'metadata',
+            'product_type', 'is_unlimited_stock', 'show_in_store', 'digital_access_instructions',
+            'digital_resources', 'digital_file_url', 'digital_file_name',
             'inquiries', 'clicks', 'conversion_rate'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'source_type', 'source_id', 'media_id', 'instagram_permalink']

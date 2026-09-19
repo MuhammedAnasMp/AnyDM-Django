@@ -1161,6 +1161,9 @@ class WebsiteSettingsView(APIView):
                 new_domain = re.sub(r'^https?://', '', new_domain).strip('/')
                 new_domain = re.sub(r'[^a-z0-9.-]', '', new_domain)
                 if new_domain != settings_obj.custom_domain:
+                    has_paid_pro = (getattr(user, 'pro_purchase_count', 0) > 0) or user.is_superuser
+                    if not has_paid_pro:
+                        return Response({'error': 'Custom domain configuration is exclusively available for paid Pro Plan subscribers (₹499). Please upgrade your plan to set a custom domain.'}, status=status.HTTP_403_FORBIDDEN)
                     if WebsiteSettings.objects.filter(custom_domain__iexact=new_domain).exclude(id=settings_obj.id).exists():
                         return Response({'error': 'This custom domain is already registered to another store.'}, status=status.HTTP_400_BAD_REQUEST)
                     settings_obj.custom_domain = new_domain
@@ -1428,6 +1431,10 @@ class SyncCloudflareCustomDomainView(APIView):
 
     def post(self, request):
         user = request.user
+        has_paid_pro = (getattr(user, 'pro_purchase_count', 0) > 0) or user.is_superuser
+        if not has_paid_pro:
+            return Response({'error': 'Custom domain configuration is exclusively available for paid Pro Plan subscribers (₹499). Please upgrade your plan.'}, status=status.HTTP_403_FORBIDDEN)
+
         active_account = getattr(user, 'active_instagram_account', None) or user.instagram_accounts.filter(is_active=True).first()
         if active_account:
             settings_obj = WebsiteSettings.objects.filter(instagram_account=active_account).first()
@@ -1500,9 +1507,20 @@ class PublicStorefrontView(APIView):
         online_payment_enabled = settings_obj.online_payment_enabled and (
             seller_kyc.status == 'APPROVED')
 
-        # Get active products for this supplier
+        # Get active products for this supplier (public store only shows products enabled for store)
+        search_query = request.query_params.get('search') or request.query_params.get('q')
         products = Product.objects.filter(
-            instagram_account=account, status='ACTIVE').order_by('-created_at')
+            instagram_account=account, status='ACTIVE', show_in_store=True)
+        
+        if search_query and search_query.strip():
+            sq = search_query.strip()
+            products = products.filter(
+                Q(title__icontains=sq) |
+                Q(description__icontains=sq) |
+                Q(category__name__icontains=sq)
+            )
+        
+        products = products.order_by('-created_at')
         products_data = []
         for p in products:
             products_data.append({
@@ -1516,6 +1534,8 @@ class PublicStorefrontView(APIView):
                 'instagram_permalink': p.instagram_permalink,
                 'stock': p.stock,
                 'is_negotiable': p.is_negotiable,
+                'product_type': getattr(p, 'product_type', 'PHYSICAL'),
+                'is_unlimited_stock': getattr(p, 'is_unlimited_stock', False),
                 'category': p.category.name if p.category else None,
             })
 
@@ -1674,6 +1694,11 @@ class PublicProductDetailView(APIView):
                 'allow_return': product.allow_return,
                 'allow_refund': product.allow_refund,
                 'status': product.status,
+                'product_type': getattr(product, 'product_type', 'PHYSICAL'),
+                'is_unlimited_stock': getattr(product, 'is_unlimited_stock', False),
+                'show_in_store': getattr(product, 'show_in_store', True),
+                'digital_access_instructions': getattr(product, 'digital_access_instructions', ''),
+                'digital_resources': getattr(product, 'digital_resources', []),
                 'gallery': gallery_data,
                 'variants': variants,
                 'category': product.category.name if product.category else None,
@@ -1762,6 +1787,8 @@ def serialize_user_payload(user):
         'is_following_official_account': getattr(user, 'is_following_official_account', False),
         'official_follow_points_awarded': getattr(user, 'official_follow_points_awarded', 0),
         'official_follow_at': user.official_follow_at.isoformat() if getattr(user, 'official_follow_at', None) else None,
+        'pro_purchase_count': getattr(user, 'pro_purchase_count', 0),
+        'has_paid_pro': (getattr(user, 'pro_purchase_count', 0) > 0) or user.is_superuser,
     }
     if user.is_superuser:
         payload['is_superuser'] = True

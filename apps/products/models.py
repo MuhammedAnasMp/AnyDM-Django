@@ -103,6 +103,54 @@ class Product(models.Model):
         max_digits=10, decimal_places=2, default=0.00,
         help_text="Restocking/return fee deducted from customer refund amount")
 
+    PRODUCT_TYPE_CHOICES = [
+        ('PHYSICAL', 'Physical Product'),
+        ('DIGITAL', 'Digital Product'),
+    ]
+
+    product_type = models.CharField(
+        max_length=20,
+        choices=PRODUCT_TYPE_CHOICES,
+        default='PHYSICAL'
+    )
+
+    is_unlimited_stock = models.BooleanField(
+        default=False,
+        help_text="If true, product stock is unlimited (useful for digital products)"
+    )
+
+    show_in_store = models.BooleanField(
+        default=True,
+        help_text="If true, product is listed publicly on supplier web store. If false, accessible only via direct link or DM."
+    )
+
+    digital_access_instructions = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Custom instructions or message displayed to buyer after purchasing digital product"
+    )
+
+    digital_resources = models.JSONField(
+        default=list,
+        blank=True,
+        null=True,
+        help_text="List of digital files and external video/resource links attached to this product"
+    )
+
+    digital_file_url = models.URLField(
+        max_length=2000,
+        blank=True,
+        null=True,
+        help_text="Legacy single digital file URL"
+    )
+
+    digital_file_name = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Legacy single digital file name"
+    )
+
     category = models.ForeignKey(
         Category,
         on_delete=models.SET_NULL,

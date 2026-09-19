@@ -2411,11 +2411,15 @@ class CheckoutView(APIView):
             except Product.DoesNotExist:
                 return Response({'error': f"Product {item['product_id']} not found in this store."}, status=404)
 
-            if prod.stock < item['quantity']:
-                return Response({'error': f"Product {prod.title} is out of stock / insufficient quantity."}, status=400)
+            # Stock validation (Skip for digital products or unlimited stock)
+            if getattr(prod, 'product_type', 'PHYSICAL') != 'DIGITAL' and not getattr(prod, 'is_unlimited_stock', False):
+                if prod.stock < item['quantity']:
+                    return Response({'error': f"Product {prod.title} is out of stock / insufficient quantity."}, status=400)
 
-            # COD Rules validation
+            # COD Rules validation (Strictly blocked for digital products)
             if payment_method == 'COD':
+                if getattr(prod, 'product_type', 'PHYSICAL') == 'DIGITAL':
+                    return Response({'error': f"Digital product '{prod.title}' cannot be purchased with Cash on Delivery. Please select Online Payment."}, status=400)
                 if not sys_settings.global_cod_enabled:
                     return Response({'error': 'Cash on Delivery is currently disabled globally.'}, status=400)
                 if not store_settings.cod_enabled:
@@ -2428,7 +2432,8 @@ class CheckoutView(APIView):
             price = prod.discount_price if prod.discount_price else (
                 prod.price if prod.price else 0)
             total_amount += price * item['quantity']
-            shipping_charge = max(shipping_charge, prod.shipping_charge)
+            if getattr(prod, 'product_type', 'PHYSICAL') != 'DIGITAL':
+                shipping_charge = max(shipping_charge, prod.shipping_charge)
 
         # Total amount including shipping
         total_amount += shipping_charge
@@ -2495,11 +2500,12 @@ class CheckoutView(APIView):
                 price=price,
                 variant=variant
             )
-            # Deduct stock
-            prod.stock = max(0, prod.stock - qty)
-            if prod.stock == 0:
-                prod.status = 'OUT_OF_STOCK'
-            prod.save()
+            # Deduct stock (Physical products only)
+            if getattr(prod, 'product_type', 'PHYSICAL') != 'DIGITAL' and not getattr(prod, 'is_unlimited_stock', False):
+                prod.stock = max(0, prod.stock - qty)
+                if prod.stock == 0:
+                    prod.status = 'OUT_OF_STOCK'
+                prod.save()
 
             # Record Settlement (For online payments only - AnyDM does not manage COD cash flows)
             if payment_method == 'RAZORPAY':
@@ -2724,13 +2730,24 @@ class OrderTrackingView(APIView):
             return Response({'error': 'Order not found.'}, status=404)
 
         items_data = []
+        prod_name = None
+        is_digital_order = True if order.items.exists() else False
         for item in order.items.all():
+            if not prod_name and item.product:
+                prod_name = item.product.title
+            p_type = getattr(item.product, 'product_type', 'PHYSICAL') if item.product else 'PHYSICAL'
+            if p_type != 'DIGITAL':
+                is_digital_order = False
             items_data.append({
-                'product_title': item.product.title,
+                'product_title': item.product.title if item.product else 'Product',
+                'product_type': p_type,
                 'quantity': item.quantity,
                 'price': str(item.price),
                 'variant': item.variant
             })
+
+        if not prod_name:
+            prod_name = f"Order {order.order_id}"
 
         # Return policies
         from apps.accounts.models import WebsiteSettings
@@ -2741,11 +2758,58 @@ class OrderTrackingView(APIView):
         return_deduction = order.return_deduction_charge or Decimal('0.00')
         estimated_refund = max(Decimal('0.00'), order.total_amount - return_deduction)
 
-        first_item = order.items.first()
-        prod_name = first_item.product.title if first_item and first_item.product else "Store Item Purchase"
+        # Check digital products access
+        is_paid = (order.payment_status == 'PAID' or order.order_status in [
+            'PAYMENT_RECEIVED', 'CONFIRMED', 'PROCESSING', 'PACKED',
+            'SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'COMPLETED',
+            'PENDING_PAYMENT'
+        ]) or (order.order_status != 'CANCELLED')
+        digital_items = []
+        for item in order.items.all():
+            prod = item.product
+            if prod and getattr(prod, 'product_type', 'PHYSICAL') == 'DIGITAL':
+                digital_item_data = {
+                    'product_id': prod.id,
+                    'title': prod.title,
+                    'description': prod.description,
+                    'main_media_url': prod.main_media_url,
+                    'product_type': 'DIGITAL',
+                    'is_paid': is_paid,
+                }
+                if is_paid:
+                    digital_item_data['digital_access_instructions'] = prod.digital_access_instructions
+                    resources = list(prod.digital_resources or [])
+                    if not resources and prod.digital_file_url:
+                        resources.append({
+                            "id": "legacy_1",
+                            "type": "FILE",
+                            "title": prod.digital_file_name or "Download File",
+                            "url": prod.digital_file_url
+                        })
+                    # Fallback: Auto-include product main media and gallery items as downloadable digital resources if explicit digital_resources is empty
+                    if not resources:
+                        if prod.main_media_url:
+                            resources.append({
+                                "id": f"media_main_{prod.id}",
+                                "type": "FILE",
+                                "title": f"{prod.title} (Digital Content)",
+                                "url": prod.main_media_url
+                            })
+                        if prod.gallery and hasattr(prod.gallery, 'all'):
+                            for g_idx, gal in enumerate(prod.gallery.all(), 1):
+                                if gal.media_url and gal.media_url != prod.main_media_url:
+                                    resources.append({
+                                        "id": f"media_gal_{gal.id}",
+                                        "type": "FILE",
+                                        "title": f"{prod.title} - Asset #{g_idx}",
+                                        "url": gal.media_url
+                                    })
+                    digital_item_data['digital_resources'] = resources
+                digital_items.append(digital_item_data)
 
         return Response({
             'order_id': order.order_id,
+            'tracking_token': order.tracking_token,
             'store_username': order.instagram_account.username,
             'store_name': store_settings.store_name or order.instagram_account.full_name or order.instagram_account.username,
             'store_logo': store_settings.store_logo,
@@ -2753,8 +2817,14 @@ class OrderTrackingView(APIView):
             'theme_id': store_settings.theme_id or 'default',
             'custom_settings': store_settings.custom_settings or {},
             'customer_name': order.customer_name,
+            'customer_email': getattr(order, 'customer_email', None) or getattr(order, 'email', None),
+            'customer_phone': getattr(order, 'customer_phone', None) or getattr(order, 'phone', None),
+            'customer_session_token': getattr(order, 'customer_session_token', None),
+            'instagram_username': getattr(order, 'instagram_username', None),
+            'instagram_scoped_id': getattr(order, 'instagram_scoped_id', None),
             'payment_method': order.payment_method,
             'order_status': order.order_status,
+            'payment_status': order.payment_status,
             'total_amount': str(order.total_amount),
             'product_name': prod_name,
             'shipping_charge': str(order.shipping_charge),
@@ -2762,6 +2832,7 @@ class OrderTrackingView(APIView):
             'estimated_refund_amount': str(estimated_refund),
             'created_at': order.created_at,
             'items': items_data,
+            'digital_items': digital_items,
             'return_policy': store_settings.return_policy,
             'cancellation_policy': store_settings.cancellation_policy,
             'shipping_address': order.shipping_address,
@@ -2769,6 +2840,86 @@ class OrderTrackingView(APIView):
             'shipping_place': order.shipping_place,
             'shipping_district': order.shipping_district,
             'shipping_state': order.shipping_state,
+        })
+
+
+class DigitalDownloadView(APIView):
+    """
+    Returns digital access files and external video links for an order.
+    Access is unlocked once payment is confirmed.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, tracking_token):
+        from .models import Order, CustomerSession
+        from django.db.models import Q
+        order = Order.objects.filter(Q(tracking_token=tracking_token) | Q(order_id=tracking_token)).first()
+        if not order:
+            return Response({'error': 'Order not found.'}, status=404)
+
+        # Check session token optional verification
+        session_token = request.query_params.get('session_token') or request.headers.get('X-Customer-Session-Token')
+        if session_token:
+            session = CustomerSession.objects.filter(token=session_token).first()
+            if session and order.customer_session_token and order.customer_session_token != session.token:
+                if session.instagram_scoped_id and order.instagram_scoped_id and session.instagram_scoped_id != order.instagram_scoped_id:
+                    return Response({'error': 'Unauthorized session access.'}, status=403)
+
+        is_paid = (order.payment_status == 'PAID' or order.order_status in [
+            'PAYMENT_RECEIVED', 'CONFIRMED', 'PROCESSING', 'PACKED',
+            'SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'COMPLETED'
+        ])
+
+        if not is_paid:
+            return Response({
+                'error': 'Payment for this order is pending. Digital access will be unlocked once payment is confirmed.',
+                'order_id': order.order_id,
+                'is_paid': False
+            }, status=403)
+
+        digital_items = []
+        for item in order.items.all():
+            prod = item.product
+            if prod and getattr(prod, 'product_type', 'PHYSICAL') == 'DIGITAL':
+                resources = list(prod.digital_resources or [])
+                if not resources and prod.digital_file_url:
+                    resources.append({
+                        "id": "legacy_1",
+                        "type": "FILE",
+                        "title": prod.digital_file_name or "Download File",
+                        "url": prod.digital_file_url
+                    })
+                if not resources:
+                    if prod.main_media_url:
+                        resources.append({
+                            "id": f"media_main_{prod.id}",
+                            "type": "FILE",
+                            "title": f"{prod.title} (Digital Content)",
+                            "url": prod.main_media_url
+                        })
+                    if prod.gallery and hasattr(prod.gallery, 'all'):
+                        for g_idx, gal in enumerate(prod.gallery.all(), 1):
+                            if gal.media_url and gal.media_url != prod.main_media_url:
+                                resources.append({
+                                    "id": f"media_gal_{gal.id}",
+                                    "type": "FILE",
+                                    "title": f"{prod.title} - Asset #{g_idx}",
+                                    "url": gal.media_url
+                                })
+                digital_items.append({
+                    'product_id': prod.id,
+                    'title': prod.title,
+                    'description': prod.description,
+                    'main_media_url': prod.main_media_url,
+                    'access_instructions': prod.digital_access_instructions,
+                    'resources': resources
+                })
+
+        return Response({
+            'order_id': order.order_id,
+            'tracking_token': order.tracking_token,
+            'is_paid': True,
+            'digital_items': digital_items
         })
 
 
@@ -3893,6 +4044,8 @@ class ResolveCustomerSessionView(APIView):
 
         session.save(update_fields=['last_active_at', 'instagram_profile_pic'])
 
+        username = request.query_params.get('username')
+
         from django.db.models import Q
         query_conditions = Q(customer_session_token=token)
         if session.instagram_username:
@@ -3904,7 +4057,14 @@ class ResolveCustomerSessionView(APIView):
         if session.saved_customer_email:
             query_conditions |= Q(customer_email__iexact=session.saved_customer_email)
 
-        orders_qs = Order.objects.filter(query_conditions).distinct().order_by('-created_at')
+        orders_qs = Order.objects.filter(query_conditions).distinct()
+        if username:
+            from apps.accounts.models import InstagramAccount
+            account = InstagramAccount.objects.filter(username__iexact=username).first()
+            if account:
+                orders_qs = orders_qs.filter(instagram_account=account)
+
+        orders_qs = orders_qs.order_by('-created_at')
         orders_data = []
         for o in orders_qs:
             first_item = o.items.first()

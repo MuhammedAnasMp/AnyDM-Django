@@ -54,7 +54,11 @@ class ProductViewSet(viewsets.ModelViewSet):
         search_query = self.request.query_params.get('search', None)
         if search_query:
             queryset = queryset.filter(title__icontains=search_query)
-            
+
+        product_type = self.request.query_params.get('product_type', None)
+        if product_type in ['PHYSICAL', 'DIGITAL']:
+            queryset = queryset.filter(product_type=product_type)
+
         return queryset.order_by('-created_at')
 
 

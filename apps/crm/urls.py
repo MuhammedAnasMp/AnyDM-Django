@@ -29,7 +29,8 @@ from .views import (
     ProcessOrderRefundView,
     SellerPayoutModeView,
     ResolveCustomerSessionView,
-    CreateGuestSessionView
+    CreateGuestSessionView,
+    DigitalDownloadView
 )
 
 urlpatterns = [
@@ -62,6 +63,7 @@ urlpatterns = [
     path("seller/kyc/", SellerKYCView.as_view(), name="seller-kyc"),
     path("store/checkout/", CheckoutView.as_view(), name="store-checkout"),
     path("store/track/<str:order_id>/", OrderTrackingView.as_view(), name="order-tracking"),
+    path("store/digital-downloads/<str:tracking_token>/", DigitalDownloadView.as_view(), name="digital-downloads"),
     path("seller/orders/", SellerOrdersView.as_view(), name="seller-orders"),
     path("seller/settlements/", SellerSettlementsView.as_view(), name="seller-settlements"),
     path("session/resolve/", ResolveCustomerSessionView.as_view(), name="session-resolve"),
