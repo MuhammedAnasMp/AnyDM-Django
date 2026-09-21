@@ -1074,6 +1074,7 @@ class InstagramConversationsView(APIView):
                         has_recent_inbound = CustomerInteraction.objects.filter(
                             customer=customer,
                             direction="INBOUND",
+                            event_type__in=["DM", "STORY_REPLY"],
                             platform_timestamp__gte=cutoff
                         ).exists()
                         conv['is_within_24h_window'] = has_recent_inbound
@@ -2623,6 +2624,7 @@ class CheckoutView(APIView):
                     has_recent_inbound = CustomerInteraction.objects.filter(
                         customer=customer,
                         direction="INBOUND",
+                        event_type__in=["DM", "STORY_REPLY"],
                         platform_timestamp__gte=cutoff
                     ).exists()
 
@@ -2683,8 +2685,13 @@ class ConfirmPaymentView(APIView):
             print("[Razorpay Verification Error]:", e)
             return Response({'error': 'Payment verification failed.'}, status=400)
 
+        # Determine if all products in order are digital
+        is_digital_order = False
+        if order.items.exists():
+            is_digital_order = not order.items.filter(product__product_type='PHYSICAL').exists()
+
         order.payment_status = 'PAID'
-        order.order_status = 'PAYMENT_RECEIVED'
+        order.order_status = 'DELIVERED' if is_digital_order else 'CONFIRMED'
         order.razorpay_payment_id = razorpay_payment_id
         order.razorpay_signature = razorpay_signature
         order.save(update_fields=[
@@ -2705,6 +2712,7 @@ class ConfirmPaymentView(APIView):
                 has_recent_inbound = CustomerInteraction.objects.filter(
                     customer=customer,
                     direction="INBOUND",
+                    event_type__in=["DM", "STORY_REPLY"],
                     platform_timestamp__gte=cutoff
                 ).exists()
 
@@ -2739,8 +2747,12 @@ class OrderTrackingView(APIView):
             if p_type != 'DIGITAL':
                 is_digital_order = False
             items_data.append({
+                'product_id': item.product.id if item.product else None,
                 'product_title': item.product.title if item.product else 'Product',
                 'product_type': p_type,
+                'main_media_url': getattr(item.product, 'main_media_url', None) if item.product else None,
+                'image': getattr(item.product, 'main_media_url', None) if item.product else None,
+                'media_url': getattr(item.product, 'main_media_url', None) if item.product else None,
                 'quantity': item.quantity,
                 'price': str(item.price),
                 'variant': item.variant
