@@ -15,6 +15,36 @@ GRAPH_API_VERSION = "v26.0"
 BASE_URL = f"https://graph.instagram.com/{GRAPH_API_VERSION}"
 
 
+def format_url_for_meta(url):
+    """
+    Instagram Graph API requires images to be in JPEG format and ending in .jpg/.jpeg.
+    For Cloudinary image URLs, inject /f_jpg/ transformation and replace extension with .jpg.
+    """
+    if not url or not isinstance(url, str):
+        return url
+
+    # Do not transform video URLs
+    is_video = any(url.lower().split('?')[0].endswith(ext) for ext in [
+                   '.mp4', '.mov', '.avi', '.webm', '.mkv']) or '/video/upload/' in url
+    if is_video:
+        return url
+
+    # Cloudinary Image dynamic JPEG conversion
+    if 'res.cloudinary.com' in url and '/image/upload/' in url:
+        if '/f_jpg' not in url:
+            url = url.replace('/image/upload/', '/image/upload/f_jpg/')
+
+        base_part = url.split('?')[0]
+        query_part = '?' + url.split('?', 1)[1] if '?' in url else ''
+        for ext in ['.png', '.webp', '.gif', '.tiff', '.bmp', '.jpeg', '.PNG', '.WEBP', '.JPEG']:
+            if base_part.endswith(ext):
+                base_part = base_part[:-len(ext)] + '.jpg'
+                break
+        url = base_part + query_part
+
+    return url
+
+
 def create_media_container(account, post_type, media_url, caption="", cover_url=None, share_to_feed=True, carousel_urls=None):
     """
     Step 1: Create a media creation container with Meta Graph API.
@@ -30,6 +60,10 @@ def create_media_container(account, post_type, media_url, caption="", cover_url=
 
     url = f"{BASE_URL}/{instagram_user_id}/media"
     params = {"access_token": access_token}
+
+    media_url = format_url_for_meta(media_url)
+    if cover_url:
+        cover_url = format_url_for_meta(cover_url)
 
     is_media_video = any(media_url.lower().endswith(ext) for ext in [
                          '.mp4', '.mov', '.avi', '.webm', '.mkv']) or '/video/upload/' in media_url
@@ -65,7 +99,7 @@ def create_media_container(account, post_type, media_url, caption="", cover_url=
             ("video_url" if is_video else "image_url"): media_url
         }
     elif post_type == "CAROUSEL":
-        valid_items = [u for u in (carousel_urls or []) if u][:10]
+        valid_items = [format_url_for_meta(u) for u in (carousel_urls or []) if u][:10]
         if len(valid_items) < 2:
             raise ValueError("Carousel posts require at least 2 media items.")
 

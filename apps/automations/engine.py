@@ -3,6 +3,7 @@ import json
 import logging
 import random
 import hashlib
+from urllib.parse import urlparse, urlunparse
 from django.utils import timezone
 from django.db.models import Q
 from apps.automations.models import AutomationRule, AutomationAction, AutomationExecution, AutomationFollowerGain
@@ -90,9 +91,8 @@ def record_outbound_dm_metrics(account, response):
     """
     try:
         from django.core.cache import cache
-        import time
-        import json
-
+        import time, json
+        
         now_ts = time.time()
         key = f"ig_dm_timestamps_{account.id}"
         timestamps = cache.get(key, [])
@@ -106,13 +106,11 @@ def record_outbound_dm_metrics(account, response):
         if usage_header:
             try:
                 usage_json = json.loads(usage_header)
-                cache.set(
-                    f"ig_rate_limit_usage_{account.id}", usage_json, timeout=3600)
+                cache.set(f"ig_rate_limit_usage_{account.id}", usage_json, timeout=3600)
             except Exception:
                 pass
     except Exception as e:
-        logger.warning(
-            f"Failed to record outbound DM metrics for account {account.id}: {e}")
+        logger.warning(f"Failed to record outbound DM metrics for account {account.id}: {e}")
 
 
 def get_or_create_customer_session(account, recipient_id):
@@ -130,8 +128,7 @@ def get_or_create_customer_session(account, recipient_id):
     ).first()
 
     if not session:
-        customer = Customer.objects.filter(
-            owner=account, instagram_scoped_id=scoped_id).first()
+        customer = Customer.objects.filter(owner=account, instagram_scoped_id=scoped_id).first()
         token = f"cs_{uuid.uuid4().hex}"
         session = CustomerSession.objects.create(
             token=token,
@@ -142,14 +139,12 @@ def get_or_create_customer_session(account, recipient_id):
             instagram_profile_pic=customer.profile_pic if customer else None
         )
     elif session.customer is None:
-        customer = Customer.objects.filter(
-            owner=account, instagram_scoped_id=scoped_id).first()
+        customer = Customer.objects.filter(owner=account, instagram_scoped_id=scoped_id).first()
         if customer:
             session.customer = customer
             session.instagram_username = customer.username
             session.instagram_profile_pic = customer.profile_pic
-            session.save(update_fields=[
-                         'customer', 'instagram_username', 'instagram_profile_pic'])
+            session.save(update_fields=['customer', 'instagram_username', 'instagram_profile_pic'])
 
     return session
 
@@ -286,8 +281,7 @@ def send_instagram_dm(account, recipient_id, message_data, dm_format="text", rec
                 def_url = str(elem["default_action"].get("url", "")).strip()
                 if def_url:
                     if session_token:
-                        def_url = append_customer_session_token(
-                            def_url, session_token)
+                        def_url = append_customer_session_token(def_url, session_token)
                     clean_elem["default_action"] = {
                         "type": "web_url",
                         "url": def_url
@@ -295,8 +289,7 @@ def send_instagram_dm(account, recipient_id, message_data, dm_format="text", rec
             raw_btns = elem.get("buttons", [])
             clean_btns = []
             for b in raw_btns:
-                sanitized = sanitize_meta_button(
-                    b, session_token=session_token)
+                sanitized = sanitize_meta_button(b, session_token=session_token)
                 if sanitized:
                     clean_btns.append(sanitized)
             if clean_btns:
@@ -351,12 +344,9 @@ def send_instagram_dm(account, recipient_id, message_data, dm_format="text", rec
                 }
             }
     elif dm_format == "show_profile":
-        profile_url = message_data.get(
-            "profile_url") or f"https://instagram.com/{account.username}"
-        button_title = (message_data.get("profile_button_text")
-                        or "👤 Visit Profile")[:20]
-        header_text = message_data.get("text") or message_data.get(
-            "profile_message_text") or f"Check out our Instagram profile:"
+        profile_url = message_data.get("profile_url") or f"https://instagram.com/{account.username}"
+        button_title = (message_data.get("profile_button_text") or "👤 Visit Profile")[:20]
+        header_text = message_data.get("text") or message_data.get("profile_message_text") or f"Check out our Instagram profile:"
         message_payload = {
             "attachment": {
                 "type": "template",
@@ -492,23 +482,20 @@ def execute_single_action(seller_account, recipient_id, action, rule, customer, 
                 return False, "Loop back target not configured", "loop_back", selected_msg
 
             if str(loop_target_id) in visited_node_ids:
-                logger.warning(
-                    f"[ENGINE] Circular loop detected on target {loop_target_id}")
+                logger.warning(f"[ENGINE] Circular loop detected on target {loop_target_id}")
                 return False, "Circular loop detected", "loop_back", selected_msg
 
             visited_node_ids.add(str(loop_target_id))
 
             # 1. Search in visual_data nodes
             nodes = (rule.visual_data or {}).get("nodes", [])
-            target_node = next((n for n in nodes if str(
-                n.get("id")) == str(loop_target_id)), None)
+            target_node = next((n for n in nodes if str(n.get("id")) == str(loop_target_id)), None)
 
             if target_node:
                 t_data = target_node.get("data", {})
                 target_format = t_data.get("dm_format", "text")
                 t_msgs = t_data.get("messages") or []
-                t_msg = t_msgs[0] if t_msgs else t_data.get(
-                    "text", selected_msg)
+                t_msg = t_msgs[0] if t_msgs else t_data.get("text", selected_msg)
 
                 # Recursively resolve if target is another loop_back
                 if target_format == "loop_back":
@@ -541,26 +528,21 @@ def execute_single_action(seller_account, recipient_id, action, rule, customer, 
                         if btn_copy.get("type") == "product":
                             btn_copy["type"] = "web_url"
                         cleaned_buttons.append(btn_copy)
-                    msg_data = {"text": t_data.get(
-                        "button_template_text") or t_msg, "buttons": cleaned_buttons}
+                    msg_data = {"text": t_data.get("button_template_text") or t_msg, "buttons": cleaned_buttons}
 
                 elif target_format == "quick_reply":
                     qr_titles = t_data.get("quick_replies_titles", [])
                     if isinstance(qr_titles, str):
-                        qr_titles = [t.strip()
-                                     for t in qr_titles.split(",") if t.strip()]
+                        qr_titles = [t.strip() for t in qr_titles.split(",") if t.strip()]
                     quick_replies = [
-                        {"content_type": "text",
-                            "title": t[:20], "payload": f"QR_{t[:20].upper().replace(' ', '_')}"}
+                        {"content_type": "text", "title": t[:20], "payload": f"QR_{t[:20].upper().replace(' ', '_')}"}
                         for t in qr_titles
                     ]
-                    msg_data = {"text": t_data.get(
-                        "quick_reply_text") or t_msg, "quick_replies": quick_replies}
+                    msg_data = {"text": t_data.get("quick_reply_text") or t_msg, "quick_replies": quick_replies}
 
                 elif target_format == "generic_template":
                     elems = []
-                    elems_json = t_data.get(
-                        "generic_template_elements_json", "[]")
+                    elems_json = t_data.get("generic_template_elements_json", "[]")
                     if isinstance(elems_json, str) and elems_json.strip():
                         try:
                             elems = json.loads(elems_json)
@@ -571,12 +553,9 @@ def execute_single_action(seller_account, recipient_id, action, rule, customer, 
                     msg_data = {"elements": elems}
 
                 elif target_format == "show_profile":
-                    p_url = t_data.get(
-                        "profile_url") or f"https://instagram.com/{seller_account.username}"
-                    p_btn = (t_data.get("profile_button_text")
-                             or "👤 Visit Profile")[:20]
-                    p_text = t_data.get(
-                        "profile_message_text") or t_msg or "Check out our Instagram profile:"
+                    p_url = t_data.get("profile_url") or f"https://instagram.com/{seller_account.username}"
+                    p_btn = (t_data.get("profile_button_text") or "👤 Visit Profile")[:20]
+                    p_text = t_data.get("profile_message_text") or t_msg or "Check out our Instagram profile:"
                     msg_data = {
                         "profile_url": p_url,
                         "profile_button_text": p_btn,
@@ -588,25 +567,16 @@ def execute_single_action(seller_account, recipient_id, action, rule, customer, 
                     is_following = customer.is_following_business if customer else False
                     if is_following is True:
                         branch_format = t_data.get("following_format", "text")
-                        branch_text = t_data.get(
-                            "following_text") or "Thanks for following us!"
-                        branch_btn_text = t_data.get(
-                            "following_button_text") or ""
-                        branch_btns_json = t_data.get(
-                            "following_buttons_json") or ""
-                        branch_profile_url = t_data.get(
-                            "following_profile_url") or f"https://instagram.com/{seller_account.username}"
+                        branch_text = t_data.get("following_text") or "Thanks for following us!"
+                        branch_btn_text = t_data.get("following_button_text") or ""
+                        branch_btns_json = t_data.get("following_buttons_json") or ""
+                        branch_profile_url = t_data.get("following_profile_url") or f"https://instagram.com/{seller_account.username}"
                     else:
-                        branch_format = t_data.get(
-                            "not_following_format", "button_template")
-                        branch_text = t_data.get(
-                            "not_following_text") or "Please follow our Instagram page to access full content!"
-                        branch_btn_text = t_data.get(
-                            "not_following_button_text") or "👉 Follow Us"
-                        branch_btns_json = t_data.get(
-                            "not_following_buttons_json") or ""
-                        branch_profile_url = t_data.get(
-                            "not_following_profile_url") or f"https://instagram.com/{seller_account.username}"
+                        branch_format = t_data.get("not_following_format", "button_template")
+                        branch_text = t_data.get("not_following_text") or "Please follow our Instagram page to access full content!"
+                        branch_btn_text = t_data.get("not_following_button_text") or "👉 Follow Us"
+                        branch_btns_json = t_data.get("not_following_buttons_json") or ""
+                        branch_profile_url = t_data.get("not_following_profile_url") or f"https://instagram.com/{seller_account.username}"
 
                     target_format = branch_format
                     if branch_format == "show_profile":
@@ -619,13 +589,11 @@ def execute_single_action(seller_account, recipient_id, action, rule, customer, 
                         btns = []
                         if branch_btns_json:
                             try:
-                                btns = json.loads(branch_btns_json) if isinstance(
-                                    branch_btns_json, str) else branch_btns_json
+                                btns = json.loads(branch_btns_json) if isinstance(branch_btns_json, str) else branch_btns_json
                             except Exception:
                                 btns = []
                         if not btns:
-                            btns = [{"type": "web_url", "url": branch_profile_url, "title": (
-                                branch_btn_text or "👉 Follow Us")[:20]}]
+                            btns = [{"type": "web_url", "url": branch_profile_url, "title": (branch_btn_text or "👉 Follow Us")[:20]}]
                         msg_data = {"text": branch_text, "buttons": btns}
                     else:
                         msg_data = {"text": branch_text}
@@ -661,8 +629,7 @@ def execute_single_action(seller_account, recipient_id, action, rule, customer, 
             # 2. Check if loop_target_id matches an Action in DB
             target_action = None
             if str(loop_target_id).isdigit():
-                target_action = rule.actions.filter(
-                    id=int(loop_target_id)).first()
+                target_action = rule.actions.filter(id=int(loop_target_id)).first()
             if not target_action:
                 for a in rule.actions.all():
                     if f"node-a-{rule.id}-{a.id}" == str(loop_target_id) or str(a.id) in str(loop_target_id):
@@ -707,8 +674,7 @@ def execute_single_action(seller_account, recipient_id, action, rule, customer, 
                     current_image_group.append(att)
                 else:
                     if current_image_group:
-                        grouped_runs.append(
-                            ("image_group", current_image_group))
+                        grouped_runs.append(("image_group", current_image_group))
                         current_image_group = []
                     grouped_runs.append((att_type, att))
             if current_image_group:
@@ -758,14 +724,11 @@ def execute_single_action(seller_account, recipient_id, action, rule, customer, 
         else:
             msg_data = {"text": selected_msg}
             if dm_format == "quick_reply":
-                msg_data["quick_replies"] = action.quick_reply_payload.get(
-                    "quick_replies", [])
+                msg_data["quick_replies"] = action.quick_reply_payload.get("quick_replies", [])
             elif dm_format == "button_template":
-                msg_data["buttons"] = action.button_template_payload.get(
-                    "buttons", [])
+                msg_data["buttons"] = action.button_template_payload.get("buttons", [])
             elif dm_format == "generic_template":
-                msg_data["elements"] = action.generic_template_payload.get(
-                    "elements", [])
+                msg_data["elements"] = action.generic_template_payload.get("elements", [])
             elif dm_format == "show_profile":
                 payload = action.show_profile_payload or {}
                 msg_data = {
@@ -783,30 +746,20 @@ def execute_single_action(seller_account, recipient_id, action, rule, customer, 
                         sync_customer_profile(customer, force=True)
                         is_following = customer.is_following_business
                     except Exception as e:
-                        logger.error(
-                            f"[ENGINE] Failed to sync customer for check_follow: {e}")
+                        logger.error(f"[ENGINE] Failed to sync customer for check_follow: {e}")
 
                 if is_following is True:
                     branch_format = cf_payload.get("following_format", "text")
-                    branch_text = cf_payload.get(
-                        "following_text") or "Thanks for following us!"
-                    branch_button_text = cf_payload.get(
-                        "following_button_text") or ""
-                    branch_buttons_json = cf_payload.get(
-                        "following_buttons_json") or ""
-                    branch_profile_url = cf_payload.get(
-                        "following_profile_url") or f"https://instagram.com/{seller_account.username}"
+                    branch_text = cf_payload.get("following_text") or "Thanks for following us!"
+                    branch_button_text = cf_payload.get("following_button_text") or ""
+                    branch_buttons_json = cf_payload.get("following_buttons_json") or ""
+                    branch_profile_url = cf_payload.get("following_profile_url") or f"https://instagram.com/{seller_account.username}"
                 else:
-                    branch_format = cf_payload.get(
-                        "not_following_format", "button_template")
-                    branch_text = cf_payload.get(
-                        "not_following_text") or "Please follow our Instagram page to access full content!"
-                    branch_button_text = cf_payload.get(
-                        "not_following_button_text") or "👉 Follow Us"
-                    branch_buttons_json = cf_payload.get(
-                        "not_following_buttons_json") or ""
-                    branch_profile_url = cf_payload.get(
-                        "not_following_profile_url") or f"https://instagram.com/{seller_account.username}"
+                    branch_format = cf_payload.get("not_following_format", "button_template")
+                    branch_text = cf_payload.get("not_following_text") or "Please follow our Instagram page to access full content!"
+                    branch_button_text = cf_payload.get("not_following_button_text") or "👉 Follow Us"
+                    branch_buttons_json = cf_payload.get("not_following_buttons_json") or ""
+                    branch_profile_url = cf_payload.get("not_following_profile_url") or f"https://instagram.com/{seller_account.username}"
 
                 dm_format = branch_format
                 if branch_format == "show_profile":
@@ -819,8 +772,7 @@ def execute_single_action(seller_account, recipient_id, action, rule, customer, 
                     btns = []
                     if branch_buttons_json:
                         try:
-                            btns = json.loads(branch_buttons_json) if isinstance(
-                                branch_buttons_json, str) else branch_buttons_json
+                            btns = json.loads(branch_buttons_json) if isinstance(branch_buttons_json, str) else branch_buttons_json
                         except Exception:
                             btns = []
                     if not btns:
@@ -863,10 +815,8 @@ def execute_automation(interaction):
 
     seller_account = interaction.seller_account
     if seller_account and not seller_account.is_enabled:
-        print(
-            f"[ENGINE] Ignored: Seller account {seller_account.username} (ID: {seller_account.id}) is not enabled.")
-        logger.info(
-            f"[ENGINE] Ignored: Seller account {seller_account.username} (ID: {seller_account.id}) is not enabled.")
+        print(f"[ENGINE] Ignored: Seller account {seller_account.username} (ID: {seller_account.id}) is not enabled.")
+        logger.info(f"[ENGINE] Ignored: Seller account {seller_account.username} (ID: {seller_account.id}) is not enabled.")
         return
 
     customer = interaction.customer
@@ -895,29 +845,26 @@ def execute_automation(interaction):
     if customer.waiting_for_order_id and event_type == "DM" and message_text:
         # Check if tracking is still enabled/active
         has_track_order_enabled = False
-        active_rules = AutomationRule.objects.filter(
-            seller=seller_account, status='active')
+        active_rules = AutomationRule.objects.filter(seller=seller_account, status='active')
         for r in active_rules:
             if r.visual_data and "TRACK_ORDER" in json.dumps(r.visual_data):
                 has_track_order_enabled = True
                 break
-
+                
         if not has_track_order_enabled:
-            inactive_rules = AutomationRule.objects.filter(
-                seller=seller_account).exclude(status='active')
+            inactive_rules = AutomationRule.objects.filter(seller=seller_account).exclude(status='active')
             has_inactive_track = False
             for r in inactive_rules:
                 if r.visual_data and "TRACK_ORDER" in json.dumps(r.visual_data):
                     has_inactive_track = True
                     break
-
+            
             if not has_inactive_track:
                 from apps.accounts.models import WebsiteSettings
-                settings = WebsiteSettings.objects.filter(
-                    instagram_account=seller_account).first()
+                settings = WebsiteSettings.objects.filter(instagram_account=seller_account).first()
                 if settings and settings.custom_settings and "TRACK_ORDER" in json.dumps(settings.custom_settings):
                     has_track_order_enabled = True
-
+                    
         if not has_track_order_enabled:
             # Order tracking has been disabled by the seller, reset customer state and do not reply
             customer.waiting_for_order_id = False
@@ -1026,14 +973,13 @@ def execute_automation(interaction):
                 break
 
         if not has_track_order_enabled:
-            inactive_rules = AutomationRule.objects.filter(
-                seller=seller_account).exclude(status='active')
+            inactive_rules = AutomationRule.objects.filter(seller=seller_account).exclude(status='active')
             has_inactive_track = False
             for r in inactive_rules:
                 if r.visual_data and "TRACK_ORDER" in json.dumps(r.visual_data):
                     has_inactive_track = True
                     break
-
+            
             if not has_inactive_track:
                 settings = WebsiteSettings.objects.filter(
                     instagram_account=seller_account).first()
@@ -1119,8 +1065,7 @@ def execute_automation(interaction):
                     rule.save()
                     continue
                 # Check Follower Branch filtering (for check_follow branch flows)
-                cf_branch = (action.check_follow_payload or {}
-                             ).get('cf_branch')
+                cf_branch = (action.check_follow_payload or {}).get('cf_branch')
                 if not cf_branch and action.parent_event == 'CHECK_FOLLOW':
                     if action.dm_format == 'loop_back':
                         cf_branch = 'not_following'
@@ -1132,21 +1077,16 @@ def execute_automation(interaction):
                         from apps.crm.utils import sync_customer_profile
                         sync_customer_profile(customer, force=True)
                     except Exception as e:
-                        logger.warning(
-                            f"[ENGINE] Failed to sync customer profile for check_follow branch: {e}")
+                        logger.warning(f"[ENGINE] Failed to sync customer profile for check_follow branch: {e}")
 
                     is_following = bool(customer.is_following_business)
                     if cf_branch == 'following' and not is_following:
-                        print(
-                            f"[ENGINE - CF_BRANCH] Skipping action {action.id} because customer {customer.id} is not following.")
-                        logger.info(
-                            f"[ENGINE - CF_BRANCH] Skipping action {action.id} because customer {customer.id} is not following.")
+                        print(f"[ENGINE - CF_BRANCH] Skipping action {action.id} because customer {customer.id} is not following.")
+                        logger.info(f"[ENGINE - CF_BRANCH] Skipping action {action.id} because customer {customer.id} is not following.")
                         continue
                     elif cf_branch == 'not_following' and is_following:
-                        print(
-                            f"[ENGINE - CF_BRANCH] Skipping action {action.id} because customer {customer.id} is already following.")
-                        logger.info(
-                            f"[ENGINE - CF_BRANCH] Skipping action {action.id} because customer {customer.id} is already following.")
+                        print(f"[ENGINE - CF_BRANCH] Skipping action {action.id} because customer {customer.id} is already following.")
+                        logger.info(f"[ENGINE - CF_BRANCH] Skipping action {action.id} because customer {customer.id} is already following.")
                         continue
 
                 actions_log = []
@@ -1260,8 +1200,7 @@ def execute_automation(interaction):
                 bool(media_id) or
                 bool((interaction.metadata or {}).get("attachments"))
             )
-            is_trigger_match = (
-                event_type == "DM") and is_media_share_event and not is_story_reply
+            is_trigger_match = (event_type == "DM") and is_media_share_event and not is_story_reply
 
         elif rule.rule_type in ['dm_automation', 'giveaway_dm', 'product_inquiry_dm']:
             is_trigger_match = (
@@ -1333,8 +1272,7 @@ def execute_automation(interaction):
                 from apps.crm.utils import sync_customer_profile
                 sync_customer_profile(customer, force=True)
             except Exception as e:
-                logger.error(
-                    f"[ENGINE] Failed to sync customer profile for follower gate: {e}", exc_info=True)
+                logger.error(f"[ENGINE] Failed to sync customer profile for follower gate: {e}", exc_info=True)
 
             is_following = customer.is_following_business
             if is_following is None:
@@ -1473,8 +1411,7 @@ def execute_automation(interaction):
         if overall_status == "success" and customer and customer.is_following_business:
             try:
                 AutomationFollowerGain.objects.get_or_create(
-                    rule=rule, customer=customer, defaults={
-                        'source': 'automation_interaction'}
+                    rule=rule, customer=customer, defaults={'source': 'automation_interaction'}
                 )
             except Exception as e:
                 logger.error(f"[ENGINE] Failed to record follower gain: {e}")

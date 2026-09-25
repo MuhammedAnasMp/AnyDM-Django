@@ -565,10 +565,10 @@ class AutomationListCreateView(APIView):
             # Detect cf_branch
             cf_branch = a_data.get('cf_branch')
             if not cf_branch:
-                if a_data.get('is_cf_following') or 'following' in str(node.get('id')):
-                    cf_branch = 'following'
-                elif a_data.get('is_cf_not_following') or 'not-following' in str(node.get('id')):
+                if a_data.get('is_cf_not_following') or 'not-following' in str(node.get('id')) or 'not_following' in str(node.get('id')):
                     cf_branch = 'not_following'
+                elif a_data.get('is_cf_following') or ('following' in str(node.get('id')) and 'not' not in str(node.get('id'))):
+                    cf_branch = 'following'
 
             action = AutomationAction(
                 rule=rule,
